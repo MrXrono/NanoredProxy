@@ -1,12 +1,12 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import require_admin
-from app.models import Account, AccountAggregate, CountryAggregate, Proxy, ProxyAggregate, Session as SessionModel, TrafficRollup
+from app.models import Account, AccountAggregate, CountryAggregate, Proxy, ProxyAggregate, ProxyCurrentDayStat, Session as SessionModel, TrafficRollup
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
@@ -93,3 +93,56 @@ async def ab_stats(db: Session = Depends(get_db)):
     for variant, count, avg_total_bytes in rows:
         out[variant] = {'sessions': count, 'avg_total_bytes': float(avg_total_bytes or 0)}
     return out
+
+
+@router.get('/rating')
+async def rating_table(
+    limit: int = 100,
+    country_code: str | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Proxy rating table sorted by rating_score DESC."""
+    stmt = (
+        select(
+            Proxy.id, func.host(Proxy.host).label('host'), Proxy.port,
+            Proxy.status, Proxy.country_code, Proxy.is_quarantined,
+            ProxyAggregate.rating_score,
+            ProxyAggregate.ping_avg_ms_today,
+            ProxyAggregate.ping_success_rate_today,
+            ProxyAggregate.auth_avg_ms_today,
+            ProxyAggregate.auth_success_rate_today,
+            ProxyAggregate.avg_download_day_mbps,
+            ProxyAggregate.avg_upload_day_mbps,
+        )
+        .join(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id, isouter=True)
+        .where(Proxy.is_enabled.is_(True))
+    )
+    if country_code:
+        stmt = stmt.where(Proxy.country_code == country_code)
+    if status:
+        stmt = stmt.where(Proxy.status == status)
+    rows = db.execute(
+        stmt.order_by(func.coalesce(ProxyAggregate.rating_score, 0).desc()).limit(limit)
+    ).all()
+    return {
+        'items': [
+            {
+                'id': r.id,
+                'host': r.host,
+                'port': r.port,
+                'status': r.status,
+                'country': r.country_code or '-',
+                'quarantined': r.is_quarantined,
+                'rating': int(r.rating_score) if r.rating_score is not None else 0,
+                'ping_ms': round(float(r.ping_avg_ms_today), 1) if r.ping_avg_ms_today is not None else None,
+                'ping_rate': round(float(r.ping_success_rate_today) * 100, 1) if r.ping_success_rate_today is not None else None,
+                'auth_ms': round(float(r.auth_avg_ms_today), 1) if r.auth_avg_ms_today is not None else None,
+                'auth_rate': round(float(r.auth_success_rate_today) * 100, 1) if r.auth_success_rate_today is not None else None,
+                'download': round(float(r.avg_download_day_mbps), 2) if r.avg_download_day_mbps is not None else None,
+                'upload': round(float(r.avg_upload_day_mbps), 2) if r.avg_upload_day_mbps is not None else None,
+            }
+            for r in rows
+        ],
+        'total': len(rows),
+    }

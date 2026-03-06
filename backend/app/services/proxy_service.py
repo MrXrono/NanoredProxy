@@ -28,6 +28,11 @@ def _aggregate_dict(proxy: Proxy) -> dict:
         'avg_upload_day_mbps': float(agg.avg_upload_day_mbps) if agg and agg.avg_upload_day_mbps is not None else None,
         'stability_score': float(agg.stability_score) if agg and agg.stability_score is not None else None,
         'composite_score': float(agg.composite_score) if agg and agg.composite_score is not None else None,
+        'rating_score': int(agg.rating_score) if agg and agg.rating_score is not None else 0,
+        'ping_avg_ms_today': float(agg.ping_avg_ms_today) if agg and agg.ping_avg_ms_today is not None else None,
+        'ping_success_rate_today': float(agg.ping_success_rate_today) if agg and agg.ping_success_rate_today is not None else None,
+        'auth_avg_ms_today': float(agg.auth_avg_ms_today) if agg and agg.auth_avg_ms_today is not None else None,
+        'auth_success_rate_today': float(agg.auth_success_rate_today) if agg and agg.auth_success_rate_today is not None else None,
     }
 
 

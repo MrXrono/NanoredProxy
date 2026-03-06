@@ -126,6 +126,135 @@ function MetricList({ title, items }) {
   )
 }
 
+function ratingColor(score) {
+  if (score >= 400) return '#22c55e'
+  if (score >= 200) return '#f59e0b'
+  if (score > 0) return '#ef4444'
+  return '#64748b'
+}
+
+function statusBadge(status) {
+  const colors = { running: '#22c55e', idle: '#64748b', frozen: '#3b82f6', error: '#ef4444', paused: '#f59e0b' }
+  return <span style={{ color: colors[status] || '#64748b', fontWeight: 600 }}>{status}</span>
+}
+
+function RatingTable({ items, token }) {
+  const [filter, setFilter] = useState('')
+  const filtered = useMemo(() => {
+    if (!filter) return items
+    const q = filter.toLowerCase()
+    return items.filter(r => r.host.includes(q) || r.country.toLowerCase().includes(q) || r.status.includes(q))
+  }, [items, filter])
+
+  return (
+    <Section title={`Proxy Rating (${filtered.length})`} actions={<input placeholder="Filter host/country/status..." value={filter} onChange={e => setFilter(e.target.value)} style={{ minWidth: 200 }} />}>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Host</th>
+              <th>Status</th>
+              <th>Country</th>
+              <th style={{ textAlign: 'center' }}>Rating</th>
+              <th>Ping ms</th>
+              <th>Ping %</th>
+              <th>Auth ms</th>
+              <th>Auth %</th>
+              <th>DL Mbps</th>
+              <th>UL Mbps</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r, i) => (
+              <tr key={r.id}>
+                <td>{i + 1}</td>
+                <td>{r.host}:{r.port}</td>
+                <td>{r.status}</td>
+                <td>{r.country}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <span style={{
+                    display: 'inline-block', minWidth: 44, padding: '2px 8px',
+                    borderRadius: 4, background: ratingColor(r.rating), color: '#fff',
+                    fontWeight: 700, fontSize: '0.85em', textAlign: 'center',
+                  }}>
+                    {r.rating}/600
+                  </span>
+                </td>
+                <td>{r.ping_ms != null ? `${r.ping_ms}` : '-'}</td>
+                <td>{r.ping_rate != null ? `${r.ping_rate}%` : '-'}</td>
+                <td>{r.auth_ms != null ? `${r.auth_ms}` : '-'}</td>
+                <td>{r.auth_rate != null ? `${r.auth_rate}%` : '-'}</td>
+                <td>{r.download != null ? r.download : '-'}</td>
+                <td>{r.upload != null ? r.upload : '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  )
+}
+
+function QueueTable({ queueData }) {
+  if (!queueData) return <div className="muted">Loading queue data...</div>
+
+  const orch = queueData.orchestrator
+  const queue = queueData.queue || []
+
+  const agentLabels = {
+    ping_agent: 'Ping Agent',
+    auth_agent: 'Auth Agent',
+    aggregate_agent: 'Aggregate',
+    geo_agent: 'Geo Agent',
+    speedtest_agent: 'Speedtest Agent',
+    reconcile_agent: 'Reconcile Agent',
+  }
+
+  return (
+    <>
+      {orch && (
+        <Section title="Orchestrator">
+          <div className="metric-list">
+            <div><span className="muted">Status</span><strong>{statusBadge(orch.status)}</strong></div>
+            <div><span className="muted">Last started</span><strong>{orch.last_started || '-'}</strong></div>
+            <div><span className="muted">Last finished</span><strong>{orch.last_finished || '-'}</strong></div>
+            {orch.pause_reason && <div><span className="muted">Reason</span><strong>{orch.pause_reason}</strong></div>}
+          </div>
+        </Section>
+      )}
+      <Section title="Agent Queue (by priority)">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Priority</th>
+                <th>Agent</th>
+                <th>Status</th>
+                <th>Last Started</th>
+                <th>Last Finished</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {queue.map(q => (
+                <tr key={q.agent}>
+                  <td style={{ textAlign: 'center', fontWeight: 700 }}>{q.priority}</td>
+                  <td>{agentLabels[q.agent] || q.agent}</td>
+                  <td>{statusBadge(q.status)}</td>
+                  <td>{q.last_started ? q.last_started.replace('T', ' ').slice(0, 19) : '-'}</td>
+                  <td>{q.last_finished ? q.last_finished.replace('T', ' ').slice(0, 19) : '-'}</td>
+                  <td className="muted">{q.pause_reason || (q.agent === 'speedtest_agent' ? 'yields to higher priority' : '')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </>
+  )
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('nrp_token') || '')
   const [admin, setAdmin] = useState(null)
@@ -154,9 +283,11 @@ export default function App() {
   const [sessionDetails, setSessionDetails] = useState(null)
   const [sessionConnections, setSessionConnections] = useState([])
   const [sessionRoutingEvents, setSessionRoutingEvents] = useState([])
+  const [ratingData, setRatingData] = useState([])
+  const [queueData, setQueueData] = useState(null)
   const wsRef = useRef(null)
   const reloadTimer = useRef(null)
-  const tabs = useMemo(() => ['dashboard','stats','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
+  const tabs = useMemo(() => ['dashboard','stats','rating','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
 
   function handleLogin(nextToken, nextAdmin) {
     localStorage.setItem('nrp_token', nextToken)
@@ -172,7 +303,7 @@ export default function App() {
   }
 
   async function loadAll(selectedPeriod = chartPeriod) {
-    const [summaryData, chartsData, proxyData, accountData, sessionData, workerData, settingsData, configData, auditData, meData, countriesData, accountStatsData, topData, worstData, abData] = await Promise.all([
+    const [summaryData, chartsData, proxyData, accountData, sessionData, workerData, settingsData, configData, auditData, meData, countriesData, accountStatsData, topData, worstData, abData, ratingResp, queueResp] = await Promise.all([
       api('/dashboard/summary', {}, token),
       api(`/dashboard/charts?period=${encodeURIComponent(selectedPeriod)}`, {}, token),
       api('/proxies', {}, token),
@@ -188,6 +319,8 @@ export default function App() {
       api('/stats/proxies/top', {}, token),
       api('/stats/proxies/worst', {}, token),
       api('/stats/ab', {}, token),
+      api('/stats/rating', {}, token),
+      api('/system/workers/queue', {}, token),
     ])
     setSummary(summaryData)
     setCharts(chartsData)
@@ -200,6 +333,8 @@ export default function App() {
     setAudit(auditData.items || [])
     setAdmin(meData)
     setStats({ countries: countriesData.items || [], accounts: accountStatsData.items || [], top: topData.items || [], worst: worstData.items || [], ab: abData || {} })
+    setRatingData(ratingResp.items || [])
+    setQueueData(queueResp)
   }
 
   async function loadProxyDetails(id) {
@@ -345,6 +480,11 @@ export default function App() {
         <MetricList title="A/B routing" items={stats.ab} />
       </div>}
 
+      {tab === 'rating' && <>
+        <RatingTable items={ratingData} token={token} />
+        <QueueTable queueData={queueData} />
+      </>}
+
       {tab === 'proxies' && <div className="grid cols-2">
         <Section title="Import proxies" actions={<button onClick={importProxies}>Import</button>}>
           <textarea rows="10" value={proxyImportText} onChange={e => setProxyImportText(e.target.value)} placeholder="ip:port or user:pass@ip:port" />
@@ -352,9 +492,9 @@ export default function App() {
         <Section title="Proxy pool">
           <div className="table-wrap">
             <table>
-              <thead><tr><th>id</th><th>host</th><th>status</th><th>country</th><th>score</th><th>actions</th></tr></thead>
+              <thead><tr><th>id</th><th>host</th><th>status</th><th>country</th><th>rating</th><th>actions</th></tr></thead>
               <tbody>
-                {proxies.map(p => <tr key={p.id} className={selectedProxy === p.id ? 'selected-row' : ''}><td>{p.id}</td><td>{p.host}:{p.port}</td><td>{p.status}</td><td>{p.country_code || '-'}</td><td>{p.composite_score ?? '-'}</td><td className="actions wrap"><button onClick={() => loadProxyDetails(p.id)}>details</button><button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'disable' : 'enable'}</button><button onClick={() => quarantineProxy(p.id, !p.is_quarantined)}>{p.is_quarantined ? 'unquarantine' : 'quarantine'}</button><button onClick={() => setCountry(p.id, p.country_code)}>country</button><button onClick={() => recheckProxy(p.id)}>recheck</button></td></tr>)}
+                {proxies.map(p => <tr key={p.id} className={selectedProxy === p.id ? 'selected-row' : ''}><td>{p.id}</td><td>{p.host}:{p.port}</td><td>{p.status}</td><td>{p.country_code || '-'}</td><td><span style={{ color: ratingColor(p.rating_score || 0), fontWeight: 700 }}>{p.rating_score || 0}</span></td><td className="actions wrap"><button onClick={() => loadProxyDetails(p.id)}>details</button><button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'disable' : 'enable'}</button><button onClick={() => quarantineProxy(p.id, !p.is_quarantined)}>{p.is_quarantined ? 'unquarantine' : 'quarantine'}</button><button onClick={() => setCountry(p.id, p.country_code)}>country</button><button onClick={() => recheckProxy(p.id)}>recheck</button></td></tr>)}
               </tbody>
             </table>
           </div>
