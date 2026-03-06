@@ -38,19 +38,46 @@ def main():
                 speed_score = normalize_speed(float(speed_row['avg_download_day']) if speed_row['avg_download_day'] is not None else None, float(speed_row['avg_upload_day']) if speed_row['avg_upload_day'] is not None else None)
                 score = composite_score(latency_score, speed_score, stability, 0.0)
                 quarantine = should_quarantine(sr_day, float(day_row['avg_latency_day']) if day_row['avg_latency_day'] is not None else None, 1.0 - stability, threshold)
+                # Flap counts
+                cur.execute("""select count(*) as flaps from (
+                    select success, lag(success) over (order by checked_at) prev
+                    from proxy_checks where proxy_id=%s and checked_at >= now() - interval '1 day'
+                ) t where success is distinct from prev and prev is not null""", (proxy_id,))
+                flap_day = cur.fetchone()['flaps'] or 0
+                cur.execute("""select count(*) as flaps from (
+                    select success, lag(success) over (order by checked_at) prev
+                    from proxy_checks where proxy_id=%s
+                ) t where success is distinct from prev and prev is not null""", (proxy_id,))
+                flap_all = cur.fetchone()['flaps'] or 0
+                # Sessions
+                cur.execute("select count(*) filter (where status='active') as active_sess, count(*) as total_sess from sessions where assigned_proxy_id=%s", (proxy_id,))
+                sess_row = cur.fetchone()
+                active_sessions = sess_row['active_sess'] or 0
+                total_sessions_count = sess_row['total_sess'] or 0
+                # Traffic
+                cur.execute("select coalesce(sum(bytes_in),0) as bi, coalesce(sum(bytes_out),0) as bo from traffic_rollups where scope_type='proxy' and scope_id=%s::text", (proxy_id,))
+                traffic_row = cur.fetchone()
+                bytes_in_val = traffic_row['bi'] or 0
+                bytes_out_val = traffic_row['bo'] or 0
                 cur.execute(
                     """insert into proxy_aggregates(proxy_id, avg_latency_all_ms, avg_latency_day_ms, avg_latency_hour_ms, min_latency_day_ms, max_latency_day_ms,
                        success_rate_all, success_rate_day, success_rate_hour, avg_download_day_mbps, avg_upload_day_mbps, avg_ping_day_ms, avg_jitter_day_ms,
-                       total_checks, total_speedtests, total_success_checks, total_failed_checks, stability_score, composite_score, quarantine_score, last_score_recalc_at, updated_at)
-                       values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       total_checks, total_speedtests, total_success_checks, total_failed_checks,
+                       flap_count_day, flap_count_all, current_active_sessions, current_active_connections, total_sessions, total_connections, bytes_in, bytes_out,
+                       stability_score, composite_score, quarantine_score, last_score_recalc_at, updated_at)
+                       values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,0,%s,%s,%s,%s,%s,%s,%s)
                        on conflict (proxy_id) do update set avg_latency_all_ms=excluded.avg_latency_all_ms, avg_latency_day_ms=excluded.avg_latency_day_ms,
                        avg_latency_hour_ms=excluded.avg_latency_hour_ms, min_latency_day_ms=excluded.min_latency_day_ms, max_latency_day_ms=excluded.max_latency_day_ms,
                        success_rate_all=excluded.success_rate_all, success_rate_day=excluded.success_rate_day, success_rate_hour=excluded.success_rate_hour,
                        avg_download_day_mbps=excluded.avg_download_day_mbps, avg_upload_day_mbps=excluded.avg_upload_day_mbps, avg_ping_day_ms=excluded.avg_ping_day_ms,
                        avg_jitter_day_ms=excluded.avg_jitter_day_ms, total_checks=excluded.total_checks, total_speedtests=excluded.total_speedtests,
-                       total_success_checks=excluded.total_success_checks, total_failed_checks=excluded.total_failed_checks, stability_score=excluded.stability_score,
+                       total_success_checks=excluded.total_success_checks, total_failed_checks=excluded.total_failed_checks,
+                       flap_count_day=excluded.flap_count_day, flap_count_all=excluded.flap_count_all,
+                       current_active_sessions=excluded.current_active_sessions, current_active_connections=excluded.current_active_connections,
+                       total_sessions=excluded.total_sessions, total_connections=excluded.total_connections,
+                       bytes_in=excluded.bytes_in, bytes_out=excluded.bytes_out, stability_score=excluded.stability_score,
                        composite_score=excluded.composite_score, quarantine_score=excluded.quarantine_score, last_score_recalc_at=excluded.last_score_recalc_at, updated_at=excluded.updated_at""",
-                    (proxy_id, all_row['avg_latency_all'], day_row['avg_latency_day'], hour_row['avg_latency_hour'], day_row['min_latency_day'], day_row['max_latency_day'], sr_all, sr_day, sr_hour, speed_row['avg_download_day'], speed_row['avg_upload_day'], speed_row['avg_ping_day'], speed_row['avg_jitter_day'], total, speed_row['total_speedtests'] or 0, all_row['success_checks'] or 0, total - (all_row['success_checks'] or 0), stability, score, 1.0 - stability, now, now),
+                    (proxy_id, all_row['avg_latency_all'], day_row['avg_latency_day'], hour_row['avg_latency_hour'], day_row['min_latency_day'], day_row['max_latency_day'], sr_all, sr_day, sr_hour, speed_row['avg_download_day'], speed_row['avg_upload_day'], speed_row['avg_ping_day'], speed_row['avg_jitter_day'], total, speed_row['total_speedtests'] or 0, all_row['success_checks'] or 0, total - (all_row['success_checks'] or 0), flap_day, flap_all, active_sessions, total_sessions_count, bytes_in_val, bytes_out_val, stability, score, 1.0 - stability, now, now),
                 )
                 cur.execute("update proxies set is_quarantined=%s, status=case when %s then 'quarantine' when status='quarantine' and not %s then 'checking' else status end where id=%s", (quarantine, quarantine, quarantine, proxy_id))
 
