@@ -37,7 +37,7 @@ def main():
                 latency_score = normalize_latency(float(day_row['avg_latency_day']) if day_row['avg_latency_day'] is not None else None, threshold)
                 speed_score = normalize_speed(float(speed_row['avg_download_day']) if speed_row['avg_download_day'] is not None else None, float(speed_row['avg_upload_day']) if speed_row['avg_upload_day'] is not None else None)
                 score = composite_score(latency_score, speed_score, stability, 0.0)
-                quarantine = should_quarantine(sr_day, float(day_row['avg_latency_day']) if day_row['avg_latency_day'] is not None else None, 1.0 - stability, threshold)
+                quarantine = should_quarantine(sr_day, float(day_row['avg_latency_day']) if day_row['avg_latency_day'] is not None else None, 1.0 - stability, threshold) if total_day >= 3 else False
                 # Flap counts
                 cur.execute("""select count(*) as flaps from (
                     select success, lag(success) over (order by checked_at) prev

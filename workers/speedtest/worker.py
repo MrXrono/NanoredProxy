@@ -66,7 +66,7 @@ def main():
             time.sleep(resume_after_idle)
             set_worker_state('speedtest_runner', 'running')
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("select id, host::text as host, port, auth_username, auth_password from proxies where is_enabled=true and status in ('online','degraded') order by coalesce(last_speedtest_at, first_seen_at) asc nulls first limit 1")
+            cur.execute("select id, host(host) as host, port, auth_username, auth_password from proxies where is_enabled=true and status in ('online','degraded') order by coalesce(last_speedtest_at, first_seen_at) asc nulls first limit 1")
             proxy = cur.fetchone()
             if not proxy:
                 time.sleep(30)

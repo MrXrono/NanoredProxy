@@ -25,7 +25,7 @@ def main():
     while True:
         now = datetime.now(timezone.utc)
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("select id, host::text as host from proxies where country_manual_override=false and (country_code is null or status='country_unknown') order by coalesce(last_geo_attempt_at, first_seen_at) asc nulls first limit 50")
+            cur.execute("select id, host(host) as host from proxies where country_manual_override=false and (country_code is null or status='country_unknown') order by coalesce(last_geo_attempt_at, first_seen_at) asc nulls first limit 50")
             rows = cur.fetchall()
             for row in rows:
                 country = resolve_country(row['host'])
