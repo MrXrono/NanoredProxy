@@ -21,20 +21,20 @@ def choose_strategy(db: Session | None = None) -> str:
 
 
 def _score_columns(strategy: str):
-    composite = func.coalesce(ProxyAggregate.composite_score, 0.0)
-    stability = func.coalesce(ProxyAggregate.stability_score, 0.0)
+    rating = func.coalesce(ProxyAggregate.rating_score, 0)
     latency = func.coalesce(ProxyAggregate.avg_latency_day_ms, 999999.0)
     speed = (func.coalesce(ProxyAggregate.avg_download_day_mbps, 0.0) + func.coalesce(ProxyAggregate.avg_upload_day_mbps, 0.0)) / 2.0
     if strategy == 'A':
-        return [stability.desc(), latency.asc(), speed.desc(), composite.desc()]
-    return [latency.asc(), speed.desc(), stability.desc(), composite.desc()]
+        return [rating.desc(), latency.asc(), speed.desc()]
+    return [rating.desc(), speed.desc(), latency.asc()]
 
 
-def _sticky_delta_threshold(db: Session) -> float:
-    setting = db.get(SystemSetting, 'sticky_score_delta_threshold')
+def _sticky_rating_threshold(db: Session) -> int:
+    """Sticky proxy kept if rating difference <= threshold (out of 600)."""
+    setting = db.get(SystemSetting, 'sticky_rating_threshold')
     if setting and isinstance(setting.value, dict):
-        return float(setting.value.get('value', 0.15))
-    return 0.15
+        return int(setting.value.get('value', 50))
+    return 50
 
 
 def select_proxy_for_account(db: Session, account: Account, strategy: str, sticky_proxy_id: int | None = None) -> Proxy | None:
@@ -53,9 +53,9 @@ def select_proxy_for_account(db: Session, account: Account, strategy: str, stick
     if sticky_proxy_id:
         sticky = next((p for p in candidates if p.id == sticky_proxy_id), None)
         if sticky:
-            sticky_score = float(sticky.aggregate.composite_score) if sticky.aggregate and sticky.aggregate.composite_score is not None else 0.0
-            best_score = float(best.aggregate.composite_score) if best.aggregate and best.aggregate.composite_score is not None else 0.0
-            if best_score - sticky_score <= _sticky_delta_threshold(db):
+            sticky_rating = int(sticky.aggregate.rating_score) if sticky.aggregate and sticky.aggregate.rating_score is not None else 0
+            best_rating = int(best.aggregate.rating_score) if best.aggregate and best.aggregate.rating_score is not None else 0
+            if best_rating - sticky_rating <= _sticky_rating_threshold(db):
                 return sticky
     return best
 

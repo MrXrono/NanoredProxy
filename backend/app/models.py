@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -62,6 +62,8 @@ class Proxy(Base, TimestampMixin):
     last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_speedtest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_geo_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_ping_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_auth_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(Text)
     last_error_message: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
@@ -83,6 +85,73 @@ class ProxyCheck(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProxyPingCheck(Base):
+    __tablename__ = 'proxy_ping_checks'
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    proxy_id: Mapped[int] = mapped_column(ForeignKey('proxies.id', ondelete='CASCADE'), nullable=False)
+    packets_sent: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    packets_ok: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    packets_lost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    avg_rtt_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    min_rtt_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    max_rtt_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    is_alive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProxyAuthCheck(Base):
+    __tablename__ = 'proxy_auth_checks'
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    proxy_id: Mapped[int] = mapped_column(ForeignKey('proxies.id', ondelete='CASCADE'), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    success_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    avg_latency_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    min_latency_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    max_latency_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    is_auth_ok: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProxyCurrentDayStat(Base):
+    __tablename__ = 'proxy_current_day_stats'
+    proxy_id: Mapped[int] = mapped_column(ForeignKey('proxies.id', ondelete='CASCADE'), primary_key=True)
+    ping_total_ok: Mapped[int] = mapped_column(BigInteger, default=0)
+    ping_total_error: Mapped[int] = mapped_column(BigInteger, default=0)
+    ping_sum_ms: Mapped[float] = mapped_column(Numeric(16, 2), default=0)
+    ping_check_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    auth_total_ok: Mapped[int] = mapped_column(BigInteger, default=0)
+    auth_total_error: Mapped[int] = mapped_column(BigInteger, default=0)
+    auth_sum_ms: Mapped[float] = mapped_column(Numeric(16, 2), default=0)
+    auth_check_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    speedtest_sum_download_mbps: Mapped[float] = mapped_column(Numeric(16, 3), default=0)
+    speedtest_sum_upload_mbps: Mapped[float] = mapped_column(Numeric(16, 3), default=0)
+    speedtest_count: Mapped[int] = mapped_column(Integer, default=0)
+    rating_score: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProxyDailyStat(Base):
+    __tablename__ = 'proxy_daily_stats'
+    __table_args__ = (UniqueConstraint('proxy_id', 'stat_date', name='uq_proxy_daily_stats'),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    proxy_id: Mapped[int] = mapped_column(ForeignKey('proxies.id', ondelete='CASCADE'), nullable=False)
+    stat_date: Mapped[datetime] = mapped_column(Date, nullable=False)
+    ping_total_ok: Mapped[int] = mapped_column(BigInteger, default=0)
+    ping_total_error: Mapped[int] = mapped_column(BigInteger, default=0)
+    ping_avg_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    ping_success_rate: Mapped[float | None] = mapped_column(Numeric(8, 5))
+    auth_total_ok: Mapped[int] = mapped_column(BigInteger, default=0)
+    auth_total_error: Mapped[int] = mapped_column(BigInteger, default=0)
+    auth_avg_ms: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    auth_success_rate: Mapped[float | None] = mapped_column(Numeric(8, 5))
+    speedtest_avg_download_mbps: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    speedtest_avg_upload_mbps: Mapped[float | None] = mapped_column(Numeric(12, 3))
+    speedtest_count: Mapped[int] = mapped_column(Integer, default=0)
+    rating_score: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ProxySpeedtest(Base):
@@ -142,6 +211,11 @@ class ProxyAggregate(Base):
     stability_score: Mapped[float | None] = mapped_column(Numeric(12,5))
     composite_score: Mapped[float | None] = mapped_column(Numeric(12,5))
     quarantine_score: Mapped[float | None] = mapped_column(Numeric(12,5))
+    rating_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ping_avg_ms_today: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    ping_success_rate_today: Mapped[float | None] = mapped_column(Numeric(8, 5))
+    auth_avg_ms_today: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    auth_success_rate_today: Mapped[float | None] = mapped_column(Numeric(8, 5))
     real_traffic_avg_speed_mbps: Mapped[float | None] = mapped_column(Numeric(12,3))
     current_active_sessions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     current_active_connections: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

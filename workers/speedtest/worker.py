@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -11,22 +12,45 @@ from workers.common.runtime import active_sessions_count, get_setting, set_worke
 log = get_logger('speedtest')
 
 
-def proxy_url(proxy: dict) -> str:
+def write_proxychains_conf(proxy: dict) -> str:
+    auth = ''
     if proxy.get('auth_username'):
-        return f"socks5://{proxy['auth_username']}:{proxy['auth_password']}@{proxy['host']}:{proxy['port']}"
-    return f"socks5://{proxy['host']}:{proxy['port']}"
+        auth = f" {proxy['auth_username']} {proxy['auth_password']}"
+    conf = f"""strict_chain
+quiet_mode
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 10000
+
+[ProxyList]
+socks5 {proxy['host']} {proxy['port']}{auth}
+"""
+    fd, path = tempfile.mkstemp(suffix='.conf', prefix='proxychains_')
+    with os.fdopen(fd, 'w') as f:
+        f.write(conf)
+    return path
 
 
 def run_speedtest(proxy: dict) -> dict:
-    env = os.environ.copy()
-    env['ALL_PROXY'] = proxy_url(proxy)
+    conf_path = write_proxychains_conf(proxy)
     started = datetime.now(timezone.utc)
     try:
-        proc = subprocess.run(['speedtest', '--accept-license', '--accept-gdpr', '--format=json'], capture_output=True, text=True, timeout=180, env=env)
+        proc = subprocess.run(
+            ['proxychains4', '-f', conf_path, 'speedtest', '--accept-license', '--accept-gdpr', '--format=json'],
+            capture_output=True, text=True, timeout=180,
+        )
         raw = (proc.stdout or '') + (proc.stderr or '')
         if proc.returncode != 0:
             return {'started_at': started, 'finished_at': datetime.now(timezone.utc), 'success': False, 'partial_success': False, 'raw_output': raw, 'error_code': f'rc_{proc.returncode}', 'error_message': 'speedtest failed'}
-        data = json.loads(proc.stdout)
+        json_str = None
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('{'):
+                json_str = line
+                break
+        if not json_str:
+            json_str = proc.stdout
+        data = json.loads(json_str)
         ping = ((data.get('ping') or {}).get('latency'))
         jitter = ((data.get('ping') or {}).get('jitter'))
         download = ((data.get('download') or {}).get('bandwidth'))
@@ -51,6 +75,11 @@ def run_speedtest(proxy: dict) -> dict:
         return {'started_at': started, 'finished_at': datetime.now(timezone.utc), 'success': False, 'partial_success': False, 'raw_output': exc.stdout or '', 'error_code': 'timeout', 'error_message': 'speedtest timeout'}
     except Exception as exc:
         return {'started_at': started, 'finished_at': datetime.now(timezone.utc), 'success': False, 'partial_success': False, 'raw_output': '', 'error_code': exc.__class__.__name__, 'error_message': str(exc)}
+    finally:
+        try:
+            os.unlink(conf_path)
+        except OSError:
+            pass
 
 
 def main():

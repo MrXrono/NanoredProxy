@@ -46,10 +46,12 @@ services:
     ports:
       - "${SOCKS5_LISTEN_PORT:-1080}:1080"
 
-  worker-availability:
+  worker-orchestrator:
     build: ./workers
     restart: unless-stopped
     env_file: .env
+    cap_add:
+      - NET_RAW
     depends_on:
       - postgres
       - redis
@@ -58,63 +60,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-    command: ["python", "-m", "workers.availability.worker"]
-
-  worker-speedtest:
-    build: ./workers
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://backend:8000/api/v1/health/live', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    command: ["python", "-m", "workers.speedtest.worker"]
-
-  worker-geo:
-    build: ./workers
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://backend:8000/api/v1/health/live', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    command: ["python", "-m", "workers.geo.worker"]
-
-  worker-aggregate:
-    build: ./workers
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://backend:8000/api/v1/health/live', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    command: ["python", "-m", "workers.aggregate.worker"]
-
-  worker-reconcile:
-    build: ./workers
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://backend:8000/api/v1/health/live', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    command: ["python", "-m", "workers.reconcile.worker"]
+    command: ["python", "-m", "workers.orchestrator.main"]
 
   frontend:
     build: ./frontend
