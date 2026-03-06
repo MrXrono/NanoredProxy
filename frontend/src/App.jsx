@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'
-const WS = import.meta.env.VITE_WS_URL || API.replace(/^http/, 'ws')
+const API = import.meta.env.VITE_API_URL || '/api/v1'
+const WS = import.meta.env.VITE_WS_URL || ((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/v1')
 
 async function api(path, opts = {}, token) {
   const headers = { ...(opts.headers || {}) }
