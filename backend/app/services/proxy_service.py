@@ -70,7 +70,7 @@ def get_proxy(db: Session, proxy_id: int) -> Proxy | None:
 
 def create_proxy_if_missing(db: Session, payload: dict) -> tuple[Proxy, bool]:
     stmt = select(Proxy).where(
-        Proxy.host == payload['host'],
+        cast(Proxy.host, String) == payload['host'],
         Proxy.port == payload['port'],
         Proxy.auth_username.is_(payload.get('auth_username')) if payload.get('auth_username') is None else Proxy.auth_username == payload.get('auth_username'),
         Proxy.auth_password.is_(payload.get('auth_password')) if payload.get('auth_password') is None else Proxy.auth_password == payload.get('auth_password'),
