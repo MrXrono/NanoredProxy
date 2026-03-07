@@ -1,7 +1,8 @@
 from fastapi import APIRouter
-from app.api.v1 import admin_auth, dashboard, proxies, accounts, sessions, stats, config, workers, settings, audit
+from app.api.v1 import admin_auth, audit, accounts, config, dashboard, health, proxies, sessions, settings, stats, workers
 
 api_router = APIRouter()
+api_router.include_router(health.router, prefix='/health', tags=['health'])
 api_router.include_router(admin_auth.router, prefix="/admin/auth", tags=["admin-auth"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(proxies.router, prefix="/proxies", tags=["proxies"])

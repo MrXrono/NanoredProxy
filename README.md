@@ -53,3 +53,17 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Nginx reverse proxy config lives in `deploy/nginx/`.
+
+
+## Health endpoints
+
+- `GET /api/v1/health/live`
+- `GET /api/v1/health/ready`
+
+## CI
+
+GitHub Actions workflow runs backend tests and frontend build on push/PR.
+
+## Internal API protection
+
+Gateway -> backend internal endpoints now require `X-Internal-Api-Key` matching `INTERNAL_API_KEY`.

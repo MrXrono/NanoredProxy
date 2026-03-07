@@ -45,7 +45,7 @@ function Login({ onLogin }) {
     <div className="login-wrap">
       <form className="card login-card" onSubmit={submit}>
         <h1>NanoredProxy Admin</h1>
-        <p>Login to manage proxy pool, accounts, sessions, charts and workers.</p>
+        <p>Login to manage proxy pool, sessions, workers and analytics.</p>
         <label>Username<input value={username} onChange={e => setUsername(e.target.value)} /></label>
         <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
         {error && <div className="error">{error}</div>}
@@ -116,6 +116,16 @@ function formatBytes(v) {
   return `${(n / 1024 ** 3).toFixed(2)} GB`
 }
 
+function MetricList({ title, items }) {
+  return (
+    <Section title={title}>
+      <div className="metric-list">
+        {Object.entries(items || {}).map(([k, v]) => <div key={k}><span className="muted">{k}</span><strong>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</strong></div>)}
+      </div>
+    </Section>
+  )
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('nrp_token') || '')
   const [admin, setAdmin] = useState(null)
@@ -134,6 +144,16 @@ export default function App() {
   const [configPreview, setConfigPreview] = useState('')
   const [message, setMessage] = useState('')
   const [chartPeriod, setChartPeriod] = useState('24h')
+  const [selectedProxy, setSelectedProxy] = useState(null)
+  const [proxyDetails, setProxyDetails] = useState(null)
+  const [proxyChecks, setProxyChecks] = useState([])
+  const [proxySpeedtests, setProxySpeedtests] = useState([])
+  const [proxyGeoAttempts, setProxyGeoAttempts] = useState([])
+  const [proxyRoutingUsage, setProxyRoutingUsage] = useState(null)
+  const [selectedSession, setSelectedSession] = useState(null)
+  const [sessionDetails, setSessionDetails] = useState(null)
+  const [sessionConnections, setSessionConnections] = useState([])
+  const [sessionRoutingEvents, setSessionRoutingEvents] = useState([])
   const wsRef = useRef(null)
   const reloadTimer = useRef(null)
   const tabs = useMemo(() => ['dashboard','stats','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
@@ -182,11 +202,41 @@ export default function App() {
     setStats({ countries: countriesData.items || [], accounts: accountStatsData.items || [], top: topData.items || [], worst: worstData.items || [], ab: abData || {} })
   }
 
+  async function loadProxyDetails(id) {
+    const [detail, checks, speedtests, geo, usage] = await Promise.all([
+      api(`/proxies/${id}`, {}, token),
+      api(`/proxies/${id}/checks`, {}, token),
+      api(`/proxies/${id}/speedtests`, {}, token),
+      api(`/proxies/${id}/geo-attempts`, {}, token),
+      api(`/proxies/${id}/routing-usage`, {}, token),
+    ])
+    setSelectedProxy(id)
+    setProxyDetails(detail)
+    setProxyChecks(checks.items || [])
+    setProxySpeedtests(speedtests.items || [])
+    setProxyGeoAttempts(geo.items || [])
+    setProxyRoutingUsage(usage)
+  }
+
+  async function loadSessionDetails(id) {
+    const [detail, connections, events] = await Promise.all([
+      api(`/sessions/${id}`, {}, token),
+      api(`/sessions/${id}/connections`, {}, token),
+      api(`/sessions/${id}/routing-events`, {}, token),
+    ])
+    setSelectedSession(id)
+    setSessionDetails(detail)
+    setSessionConnections(connections.items || [])
+    setSessionRoutingEvents(events.items || [])
+  }
+
   function scheduleReload() {
     if (reloadTimer.current) return
     reloadTimer.current = setTimeout(async () => {
       reloadTimer.current = null
       try { await loadAll() } catch {}
+      try { if (selectedProxy) await loadProxyDetails(selectedProxy) } catch {}
+      try { if (selectedSession) await loadSessionDetails(selectedSession) } catch {}
     }, 800)
   }
 
@@ -210,7 +260,7 @@ export default function App() {
       } catch {}
     }
     return () => ws.close()
-  }, [token])
+  }, [token, selectedProxy, selectedSession])
 
   async function importProxies() {
     setMessage('')
@@ -224,12 +274,18 @@ export default function App() {
     }
   }
 
+  async function saveSettings() {
+    await api('/system/settings', { method: 'PATCH', body: JSON.stringify(settings) }, token)
+    setMessage('Settings saved')
+    await loadAll()
+  }
+
   async function reconcileAccounts() { await api('/accounts/reconcile', { method: 'POST' }, token); await loadAll() }
-  async function killSession(id) { await api(`/sessions/${id}/kill`, { method: 'POST', body: JSON.stringify({ reason: 'manual kill from UI' }) }, token); await loadAll() }
+  async function killSession(id) { await api(`/sessions/${id}/kill`, { method: 'POST', body: JSON.stringify({ reason: 'manual kill from UI' }) }, token); await loadAll(); if (selectedSession === id) await loadSessionDetails(id) }
   async function workerAction(name, action) { await api(`/system/workers/${name}/${action}`, { method: 'POST' }, token); await loadAll() }
-  async function toggleProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }, token); await loadAll() }
-  async function quarantineProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'quarantine' : 'unquarantine'}`, { method: 'POST' }, token); await loadAll() }
-  async function recheckProxy(id) { await api(`/proxies/${id}/recheck`, { method: 'POST' }, token); await loadAll() }
+  async function toggleProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }, token); await loadAll(); if (selectedProxy === id) await loadProxyDetails(id) }
+  async function quarantineProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'quarantine' : 'unquarantine'}`, { method: 'POST' }, token); await loadAll(); if (selectedProxy === id) await loadProxyDetails(id) }
+  async function recheckProxy(id) { await api(`/proxies/${id}/recheck`, { method: 'POST' }, token); await loadAll(); if (selectedProxy === id) await loadProxyDetails(id) }
   async function setCountry(id, current) {
     const value = prompt('Country code', current || '')
     if (value === null) return
@@ -239,6 +295,7 @@ export default function App() {
       await api(`/proxies/${id}/set-country`, { method: 'POST', body: JSON.stringify({ country_code: value.trim().toLowerCase() }) }, token)
     }
     await loadAll()
+    if (selectedProxy === id) await loadProxyDetails(id)
   }
 
   if (!token) return <Login onLogin={handleLogin} />
@@ -260,97 +317,100 @@ export default function App() {
         {tabs.map(name => <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}
       </nav>
 
-      {message && <div className="card message">{message}</div>}
+      {message && <div className="flash">{message}</div>}
 
-      {tab === 'dashboard' && summary && (
-        <>
-          <StatGrid summary={summary} />
-          <Section title="Traffic charts" actions={<div className="actions"><button className={chartPeriod==='24h'?'active':''} onClick={() => { setChartPeriod('24h'); loadAll('24h') }}>24h</button><button className={chartPeriod==='7d'?'active':''} onClick={() => { setChartPeriod('7d'); loadAll('7d') }}>7d</button><button className={chartPeriod==='30d'?'active':''} onClick={() => { setChartPeriod('30d'); loadAll('30d') }}>30d</button></div>}>
-            <div className="grid two-col">
-              <div>
-                <h4>Traffic by bucket</h4>
-                <Bars items={(charts?.traffic_by_bucket || []).slice(-12)} valueKey="total_bytes" labelKey="bucket_start" formatter={formatBytes} />
-              </div>
-              <div>
-                <h4>Country distribution</h4>
-                <Bars items={(charts?.country_distribution || []).slice(0, 10)} valueKey="working_proxies" labelKey="country_code" color="#22c55e" />
-              </div>
-            </div>
+      {tab === 'dashboard' && <>
+        <StatGrid summary={summary} />
+        <div className="grid cols-2">
+          <Section title="Traffic by bucket" actions={<select value={chartPeriod} onChange={async e => { setChartPeriod(e.target.value); await loadAll(e.target.value) }}><option value="24h">24h</option><option value="7d">7d</option><option value="30d">30d</option></select>}>
+            <Bars items={charts?.traffic_by_bucket || []} valueKey="total_bytes" labelKey="bucket_start" color="#22c55e" formatter={formatBytes} />
           </Section>
-          <Section title="Best latency proxies"><JsonTable rows={charts?.latency_top || []} /></Section>
-          <Section title="Top daily speed proxies"><JsonTable rows={charts?.speed_top || []} /></Section>
-        </>
-      )}
+          <Section title="Country distribution">
+            <Bars items={charts?.country_distribution || []} valueKey="working_proxies" labelKey="country_code" color="#a78bfa" formatter={v => `${v} proxies`} />
+          </Section>
+          <Section title="Latency top">
+            <Bars items={charts?.latency_top || []} valueKey="avg_latency_day_ms" labelKey="host" color="#f59e0b" formatter={v => `${v.toFixed ? v.toFixed(1) : v} ms`} />
+          </Section>
+          <Section title="Speed top">
+            <Bars items={charts?.speed_top || []} valueKey="avg_download_day_mbps" labelKey="host" color="#38bdf8" formatter={v => `${v.toFixed ? v.toFixed(1) : v} Mbps`} />
+          </Section>
+        </div>
+      </>}
 
-      {tab === 'stats' && (
-        <>
-          <Section title="Countries"><JsonTable rows={stats.countries} /></Section>
-          <Section title="Account statistics"><JsonTable rows={stats.accounts} /></Section>
-          <div className="grid two-col">
-            <Section title="Top proxies"><JsonTable rows={stats.top} /></Section>
-            <Section title="Worst proxies"><JsonTable rows={stats.worst} /></Section>
+      {tab === 'stats' && <div className="grid cols-2">
+        <Section title="Countries"><JsonTable rows={stats.countries} /></Section>
+        <Section title="Accounts"><JsonTable rows={stats.accounts} /></Section>
+        <Section title="Top proxies"><JsonTable rows={stats.top} /></Section>
+        <Section title="Worst proxies"><JsonTable rows={stats.worst} /></Section>
+        <MetricList title="A/B routing" items={stats.ab} />
+      </div>}
+
+      {tab === 'proxies' && <div className="grid cols-2">
+        <Section title="Import proxies" actions={<button onClick={importProxies}>Import</button>}>
+          <textarea rows="10" value={proxyImportText} onChange={e => setProxyImportText(e.target.value)} placeholder="ip:port or user:pass@ip:port" />
+        </Section>
+        <Section title="Proxy pool">
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>id</th><th>host</th><th>status</th><th>country</th><th>score</th><th>actions</th></tr></thead>
+              <tbody>
+                {proxies.map(p => <tr key={p.id} className={selectedProxy === p.id ? 'selected-row' : ''}><td>{p.id}</td><td>{p.host}:{p.port}</td><td>{p.status}</td><td>{p.country_code || '-'}</td><td>{p.composite_score ?? '-'}</td><td className="actions wrap"><button onClick={() => loadProxyDetails(p.id)}>details</button><button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'disable' : 'enable'}</button><button onClick={() => quarantineProxy(p.id, !p.is_quarantined)}>{p.is_quarantined ? 'unquarantine' : 'quarantine'}</button><button onClick={() => setCountry(p.id, p.country_code)}>country</button><button onClick={() => recheckProxy(p.id)}>recheck</button></td></tr>)}
+              </tbody>
+            </table>
           </div>
-          <Section title="A/B routing"><pre>{JSON.stringify(stats.ab, null, 2)}</pre></Section>
-        </>
-      )}
-
-      {tab === 'proxies' && (
-        <>
-          <Section title="Import proxies" actions={<button onClick={importProxies}>Import</button>}>
-            <textarea rows="8" value={proxyImportText} onChange={e => setProxyImportText(e.target.value)} placeholder="1.2.3.4:1080
-user:pass@5.6.7.8:1080" />
-          </Section>
-          <Section title={`Proxy pool (${proxies.length})`}>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>id</th><th>host</th><th>port</th><th>status</th><th>country</th><th>score</th><th>stability</th><th>latency</th><th>actions</th></tr></thead>
-                <tbody>
-                  {proxies.map(p => (
-                    <tr key={p.id}>
-                      <td>{p.id}</td>
-                      <td>{p.host}</td>
-                      <td>{p.port}</td>
-                      <td>{p.status}{p.is_quarantined ? ' / quarantine' : ''}</td>
-                      <td>{p.country_code || '-'}</td>
-                      <td>{p.composite_score ?? '-'}</td>
-                      <td>{p.stability_score ?? '-'}</td>
-                      <td>{p.avg_latency_day_ms ?? '-'}</td>
-                      <td className="actions stack-actions">
-                        <button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'Disable' : 'Enable'}</button>
-                        <button onClick={() => quarantineProxy(p.id, !p.is_quarantined)}>{p.is_quarantined ? 'Unquarantine' : 'Quarantine'}</button>
-                        <button onClick={() => setCountry(p.id, p.country_code)}>Country</button>
-                        <button onClick={() => recheckProxy(p.id)}>Recheck</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        </>
-      )}
+        </Section>
+        <Section title="Proxy details">
+          {proxyDetails ? <>
+            <MetricList title="Selected proxy" items={proxyDetails} />
+            <Section title="Availability checks"><JsonTable rows={proxyChecks} /></Section>
+            <Section title="Speedtests"><JsonTable rows={proxySpeedtests} /></Section>
+            <Section title="Geo attempts"><JsonTable rows={proxyGeoAttempts} /></Section>
+            <Section title="Routing usage"><JsonTable rows={proxyRoutingUsage?.recent_events || []} /></Section>
+          </> : <div className="muted">Select a proxy to inspect details.</div>}
+        </Section>
+      </div>}
 
       {tab === 'accounts' && <Section title="Accounts" actions={<button onClick={reconcileAccounts}>Reconcile</button>}><JsonTable rows={accounts} /></Section>}
 
-      {tab === 'sessions' && (
+      {tab === 'sessions' && <div className="grid cols-2">
         <Section title="Sessions">
-          <div className="table-wrap"><table><thead><tr><th>id</th><th>login</th><th>client_ip</th><th>proxy</th><th>status</th><th>connections</th><th>traffic</th><th>actions</th></tr></thead><tbody>
-            {sessions.map(s => <tr key={s.id}><td>{s.id}</td><td>{s.client_login}</td><td>{s.client_ip}</td><td>{s.assigned_proxy_id ?? '-'}</td><td>{s.status}</td><td>{s.active_connections_count}/{s.connections_count}</td><td>{formatBytes(s.total_bytes)}</td><td><button onClick={() => killSession(s.id)}>Kill</button></td></tr>)}
-          </tbody></table></div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>id</th><th>login</th><th>status</th><th>proxy</th><th>traffic</th><th>actions</th></tr></thead>
+              <tbody>
+                {sessions.map(s => <tr key={s.id} className={selectedSession === s.id ? 'selected-row' : ''}><td>{s.id.slice(0, 8)}</td><td>{s.client_login}</td><td>{s.status}</td><td>{s.assigned_proxy_id || '-'}</td><td>{formatBytes(s.total_bytes)}</td><td className="actions wrap"><button onClick={() => loadSessionDetails(s.id)}>details</button><button onClick={() => killSession(s.id)}>kill</button></td></tr>)}
+              </tbody>
+            </table>
+          </div>
         </Section>
-      )}
-
-      {tab === 'workers' && (
-        <Section title="Workers">
-          <div className="table-wrap"><table><thead><tr><th>worker</th><th>status</th><th>last_started_at</th><th>last_finished_at</th><th>pause_reason</th><th>actions</th></tr></thead><tbody>
-            {workers.map(w => <tr key={w.worker_name}><td>{w.worker_name}</td><td>{w.status}</td><td>{w.last_started_at || '-'}</td><td>{w.last_finished_at || '-'}</td><td>{w.pause_reason || '-'}</td><td className="actions"><button onClick={() => workerAction(w.worker_name, 'run-now')}>Run</button><button onClick={() => workerAction(w.worker_name, 'pause')}>Pause</button><button onClick={() => workerAction(w.worker_name, 'resume')}>Resume</button></td></tr>)}
-          </tbody></table></div>
+        <Section title="Session details">
+          {sessionDetails ? <>
+            <MetricList title="Selected session" items={sessionDetails} />
+            <Section title="Connections"><JsonTable rows={sessionConnections} /></Section>
+            <Section title="Routing events"><JsonTable rows={sessionRoutingEvents} /></Section>
+          </> : <div className="muted">Select a session to inspect details.</div>}
         </Section>
-      )}
+      </div>}
 
-      {tab === 'settings' && <Section title="Runtime settings"><pre>{JSON.stringify(settings, null, 2)}</pre></Section>}
-      {tab === 'config' && <Section title="Unified proxychains config" actions={<button onClick={() => navigator.clipboard.writeText(configPreview)}>Copy</button>}><pre>{configPreview}</pre></Section>}
-      {tab === 'audit' && <Section title="Audit logs"><JsonTable rows={audit} /></Section>}
+      {tab === 'workers' && <Section title="Workers"><div className="table-wrap"><table><thead><tr><th>worker</th><th>status</th><th>last_started_at</th><th>pause_reason</th><th>actions</th></tr></thead><tbody>{workers.map(w => <tr key={w.worker_name}><td>{w.worker_name}</td><td>{w.status}</td><td>{w.last_started_at || '-'}</td><td>{w.pause_reason || '-'}</td><td className="actions wrap"><button onClick={() => workerAction(w.worker_name, 'run-now')}>run</button><button onClick={() => workerAction(w.worker_name, 'pause')}>pause</button><button onClick={() => workerAction(w.worker_name, 'resume')}>resume</button></td></tr>)}</tbody></table></div></Section>}
+
+      {tab === 'settings' && <Section title="Settings" actions={<button onClick={saveSettings}>Save</button>}>
+        <div className="settings-grid">
+          {Object.entries(settings).map(([key, value]) => <label key={key}><span>{key}</span><textarea rows="3" value={typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)} onChange={e => {
+            const raw = e.target.value
+            setSettings(prev => {
+              const next = { ...prev }
+              try { next[key] = JSON.parse(raw) } catch { next[key] = raw }
+              return next
+            })
+          }} /></label>)}
+        </div>
+      </Section>}
+
+      {tab === 'config' && <Section title="proxychains config" actions={<button onClick={() => navigator.clipboard.writeText(configPreview)}>Copy</button>}><textarea rows="24" value={configPreview} readOnly /></Section>}
+
+      {tab === 'audit' && <Section title="Audit log"><JsonTable rows={audit} /></Section>}
+
       {tab === 'events' && <Section title="Realtime events"><JsonTable rows={events} /></Section>}
     </div>
   )

@@ -105,3 +105,18 @@ def test_worker_pause_and_resume(client):
     assert resp.json()['items'][0]['status'] == 'paused'
     resp = client.post('/api/v1/system/workers/availability_checker/resume', headers=headers)
     assert resp.status_code == 200
+
+
+def test_health_endpoints(client):
+    live = client.get('/api/v1/health/live')
+    assert live.status_code == 200
+    assert live.json()['status'] == 'ok'
+
+    ready = client.get('/api/v1/health/ready')
+    assert ready.status_code in (200, 503)
+    assert 'checks' in ready.json()
+
+
+def test_internal_gateway_requires_header(client):
+    resp = client.post('/internal/v1/gateway/auth-resolve', json={'username': 'all', 'password': 'all', 'client_ip': '127.0.0.1'})
+    assert resp.status_code == 403

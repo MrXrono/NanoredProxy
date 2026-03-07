@@ -1,13 +1,20 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.models import Account, Proxy, Session as SessionModel, SessionConnection
 from app.services.routing_service import close_connection, close_session, ensure_connection_proxy, open_connection, open_session, update_traffic
 from app.services.runtime_state import get_kill_reason, is_kill_requested
 
 router = APIRouter(prefix='/internal/v1/gateway', tags=['gateway-internal'])
+
+
+def _require_internal(x_internal_api_key: str | None = Header(default=None)):
+    if x_internal_api_key != settings.internal_api_key:
+        raise HTTPException(status_code=403, detail='invalid internal api key')
+    return True
 
 
 def _proxy_payload(proxy: Proxy | None):
@@ -23,7 +30,7 @@ def _proxy_payload(proxy: Proxy | None):
 
 
 @router.post('/auth-resolve')
-async def auth_resolve(payload: dict, db: Session = Depends(get_db)):
+async def auth_resolve(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     username = payload.get('username')
     password = payload.get('password')
     account = db.scalar(select(Account).where(Account.username == username, Account.password == password, Account.is_enabled.is_(True)))
@@ -33,7 +40,7 @@ async def auth_resolve(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.post('/session/open')
-async def session_open(payload: dict, db: Session = Depends(get_db)):
+async def session_open(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     account = db.get(Account, payload.get('account_id'))
     if not account:
         return {'ok': False}
@@ -43,7 +50,7 @@ async def session_open(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.post('/connection/open')
-async def connection_open(payload: dict, db: Session = Depends(get_db)):
+async def connection_open(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     session = db.get(SessionModel, payload.get('session_id'))
     if not session:
         return {'ok': False}
@@ -53,7 +60,7 @@ async def connection_open(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.post('/connection/close')
-async def connection_close(payload: dict, db: Session = Depends(get_db)):
+async def connection_close(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     conn = db.get(SessionConnection, payload.get('connection_id'))
     if not conn:
         return {'ok': False}
@@ -62,13 +69,13 @@ async def connection_close(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.post('/session/update-traffic')
-async def update_traffic_endpoint(payload: dict, db: Session = Depends(get_db)):
+async def update_traffic_endpoint(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     update_traffic(db, payload.get('session_id'), payload.get('connection_id'), int(payload.get('bytes_in_delta', 0)), int(payload.get('bytes_out_delta', 0)))
     return {'ok': True}
 
 
 @router.post('/session/close')
-async def session_close(payload: dict, db: Session = Depends(get_db)):
+async def session_close(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     session = db.get(SessionModel, payload.get('session_id'))
     if not session:
         return {'ok': False}
@@ -77,7 +84,7 @@ async def session_close(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.get('/session/{session_id}/state')
-async def session_state(session_id: str, db: Session = Depends(get_db)):
+async def session_state(session_id: str, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
     session = db.get(SessionModel, session_id)
     if not session:
         return {'session_id': session_id, 'status': 'error', 'kill_requested': True, 'kill_reason': 'session not found', 'assigned_proxy_id': None}

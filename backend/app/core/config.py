@@ -9,10 +9,11 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     redis_host: str = "redis"
     redis_port: int = 6379
-    jwt_secret: str = "change-me"
+    jwt_secret: str = "change-me-please-use-a-long-random-secret-32chars"
     admin_username: str = "admin"
     admin_password: str = "admin"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    internal_api_key: str = "nanored-internal"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -2,7 +2,7 @@ import asyncio
 
 import httpx
 
-from app.config import BACKEND_URL, HTTP_TIMEOUT, HTTP_RETRIES
+from app.config import BACKEND_URL, HTTP_TIMEOUT, HTTP_RETRIES, INTERNAL_API_KEY
 
 
 async def _request(method: str, path: str, json: dict | None = None):
@@ -10,7 +10,7 @@ async def _request(method: str, path: str, json: dict | None = None):
     for attempt in range(1, HTTP_RETRIES + 1):
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                resp = await client.request(method, f'{BACKEND_URL}{path}', json=json)
+                resp = await client.request(method, f'{BACKEND_URL}{path}', json=json, headers={'X-Internal-Api-Key': INTERNAL_API_KEY})
                 resp.raise_for_status()
                 return resp.json()
         except Exception as exc:
