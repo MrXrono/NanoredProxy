@@ -10,7 +10,7 @@ from workers.common.logging import get_logger
 
 log = get_logger('ping_agent')
 
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 PACKETS_PER_IP = 5
 BATCH_PAUSE_SECONDS = 2
 

@@ -10,7 +10,7 @@ from workers.common.logging import get_logger
 
 log = get_logger('auth_agent')
 
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 ATTEMPTS_PER_PROXY = 5
 ATTEMPT_DELAY = 0.5  # seconds between attempts
 TARGET_HOST = '8.8.8.8'
@@ -20,12 +20,12 @@ MAX_WORKERS = 50
 
 
 def run_auth_cycle():
-    """Full cycle: check ALL alive proxies (online_ping, online, quarantine)."""
+    """Full cycle: check ALL enabled proxies (skip only disabled/blocked)."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, host(host) AS host, port, auth_username, auth_password
             FROM proxies
-            WHERE is_enabled = true AND status IN ('online_ping', 'online', 'quarantine')
+            WHERE is_enabled = true AND status NOT IN ('disabled', 'blocked')
             ORDER BY coalesce(last_auth_at, last_ping_at, first_seen_at) ASC NULLS FIRST
         """)
         all_proxies = cur.fetchall()
