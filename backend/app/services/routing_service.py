@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import random
 from datetime import datetime, timezone
 
@@ -37,6 +38,13 @@ def _sticky_rating_threshold(db: Session) -> int:
     return 50
 
 
+def _normalize_client_ip(client_ip: str):
+    try:
+        return ipaddress.ip_address(client_ip)
+    except ValueError:
+        return client_ip
+
+
 def select_proxy_for_account(db: Session, account: Account, strategy: str, sticky_proxy_id: int | None = None) -> Proxy | None:
     stmt = (
         select(Proxy)
@@ -61,9 +69,10 @@ def select_proxy_for_account(db: Session, account: Account, strategy: str, stick
 
 
 def open_session(db: Session, account: Account, client_ip: str, client_login: str) -> SessionModel:
+    normalized_client_ip = _normalize_client_ip(client_ip)
     existing = db.scalar(
         select(SessionModel)
-        .where(SessionModel.client_ip == client_ip, SessionModel.client_login == client_login, SessionModel.status == 'active')
+        .where(SessionModel.client_ip == normalized_client_ip, SessionModel.client_login == client_login, SessionModel.status == 'active')
         .order_by(SessionModel.started_at.desc())
     )
     if existing:
@@ -73,7 +82,7 @@ def open_session(db: Session, account: Account, client_ip: str, client_login: st
     proxy = select_proxy_for_account(db, account, strategy)
     session = SessionModel(
         account_id=account.id,
-        client_ip=client_ip,
+        client_ip=normalized_client_ip,
         client_login=client_login,
         strategy_variant=strategy,
         assigned_proxy_id=proxy.id if proxy else None,
