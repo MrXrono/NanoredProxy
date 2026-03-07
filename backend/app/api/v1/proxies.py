@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.security import require_admin
 from app.schemas.common import OkResponse
 from app.schemas.proxy import ProxyImportResponse, ProxyImportTextRequest, ProxySetCountryRequest, ProxyUpdateRequest
 from app.services.proxy_parser import parse_proxy_text
@@ -18,7 +19,7 @@ from app.services.proxy_service import (
     update_proxy,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get('')
@@ -33,7 +34,7 @@ async def list_proxies(
 
 
 @router.post('/import/text', response_model=ProxyImportResponse)
-async def import_text(payload: ProxyImportTextRequest, db: Session = Depends(get_db)):
+async def import_text(payload: ProxyImportTextRequest, db: Session = Depends(get_db), admin: dict = Depends(require_admin)):
     items = parse_proxy_text(payload.text)
     inserted = 0
     duplicates = 0
@@ -46,7 +47,7 @@ async def import_text(payload: ProxyImportTextRequest, db: Session = Depends(get
 
 
 @router.post('/import/file', response_model=ProxyImportResponse)
-async def import_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_file(file: UploadFile = File(...), db: Session = Depends(get_db), admin: dict = Depends(require_admin)):
     content = (await file.read()).decode('utf-8', errors='ignore')
     items = parse_proxy_text(content)
     inserted = 0
@@ -81,29 +82,29 @@ async def get_proxy(proxy_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch('/{proxy_id}', response_model=OkResponse)
-async def patch_proxy(proxy_id: int, payload: ProxyUpdateRequest, db: Session = Depends(get_db)):
+async def patch_proxy(proxy_id: int, payload: ProxyUpdateRequest, db: Session = Depends(get_db), admin: dict = Depends(require_admin)):
     proxy = db_get_proxy(db, proxy_id)
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
-    update_proxy(db, proxy, payload)
+    update_proxy(db, proxy, payload, actor_id=str(admin.get('id', 1)))
     return OkResponse()
 
 
 @router.post('/{proxy_id}/set-country', response_model=OkResponse)
-async def set_country(proxy_id: int, payload: ProxySetCountryRequest, db: Session = Depends(get_db)):
+async def set_country(proxy_id: int, payload: ProxySetCountryRequest, db: Session = Depends(get_db), admin: dict = Depends(require_admin)):
     proxy = db_get_proxy(db, proxy_id)
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
-    svc_set_country(db, proxy, payload.country_code, True)
+    svc_set_country(db, proxy, payload.country_code, True, actor_id=str(admin.get('id', 1)))
     return OkResponse()
 
 
 @router.post('/{proxy_id}/clear-country', response_model=OkResponse)
-async def clear_country(proxy_id: int, db: Session = Depends(get_db)):
+async def clear_country(proxy_id: int, db: Session = Depends(get_db), admin: dict = Depends(require_admin)):
     proxy = db_get_proxy(db, proxy_id)
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
-    svc_set_country(db, proxy, None, False)
+    svc_set_country(db, proxy, None, False, actor_id=str(admin.get('id', 1)))
     return OkResponse()
 
 

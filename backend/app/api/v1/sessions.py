@@ -3,12 +3,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.security import require_admin
 from app.models import RoutingEvent, Session as SessionModel, SessionConnection
 from app.schemas.common import OkResponse
 from app.schemas.session import SessionKillRequest
 from app.services.routing_service import close_session
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get('')

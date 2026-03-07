@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import Base, engine
-from app.models import Account, SchedulerState, SystemSetting
+from app.models import Account, AdminUser, SchedulerState, SystemSetting
 
 DEFAULT_SETTINGS = {
     'latency_threshold_ms': {'value': 1500},
@@ -33,6 +33,9 @@ def init_db() -> None:
         for worker in DEFAULT_WORKERS:
             if not db.get(SchedulerState, worker):
                 db.add(SchedulerState(worker_name=worker, status='idle'))
+        admin = db.scalar(select(AdminUser).where(AdminUser.username == settings.admin_username))
+        if not admin:
+            db.add(AdminUser(username=settings.admin_username, password=settings.admin_password, is_active=True))
         account = db.scalar(select(Account).where(Account.username == 'all'))
         if not account:
             db.add(Account(username='all', password='all', account_type='all', is_enabled=True, is_dynamic=False))

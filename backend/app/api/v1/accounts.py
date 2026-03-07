@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.security import require_admin
 from app.models import Account
 from app.schemas.account import AccountCreate, AccountPatch
 from app.schemas.common import OkResponse
 from app.services.account_service import list_accounts as svc_list_accounts, reconcile_accounts as svc_reconcile_accounts
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 @router.get('')

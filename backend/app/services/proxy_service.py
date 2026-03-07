@@ -75,23 +75,23 @@ def create_proxy_if_missing(db: Session, payload: dict) -> tuple[Proxy, bool]:
     return proxy, True
 
 
-def update_proxy(db: Session, proxy: Proxy, payload: ProxyUpdateRequest) -> Proxy:
+def update_proxy(db: Session, proxy: Proxy, payload: ProxyUpdateRequest, actor_id: str = '1') -> Proxy:
     data = payload.model_dump(exclude_unset=True)
     for key, value in data.items():
         setattr(proxy, key, value)
-    db.add(AuditLog(actor_type='admin', actor_id='1', action='proxy_updated', target_type='proxy', target_id=str(proxy.id), payload=data))
+    db.add(AuditLog(actor_type='admin', actor_id=actor_id, action='proxy_updated', target_type='proxy', target_id=str(proxy.id), payload=data))
     db.commit()
     db.refresh(proxy)
     return proxy
 
 
-def set_country(db: Session, proxy: Proxy, country_code: str | None, manual: bool) -> Proxy:
+def set_country(db: Session, proxy: Proxy, country_code: str | None, manual: bool, actor_id: str = '1') -> Proxy:
     proxy.country_code = country_code.lower() if country_code else None
     proxy.country_source = 'manual' if manual and country_code else 'unknown'
     proxy.country_manual_override = bool(manual and country_code)
     proxy.last_geo_attempt_at = datetime.utcnow()
     db.add(ProxyGeoAttempt(proxy_id=proxy.id, success=bool(country_code), detected_country_code=proxy.country_code, source='manual' if manual else 'auto'))
-    db.add(AuditLog(actor_type='admin', actor_id='1', action='proxy_country_set_manual' if manual else 'proxy_country_cleared', target_type='proxy', target_id=str(proxy.id), payload={'country_code': proxy.country_code}))
+    db.add(AuditLog(actor_type='admin', actor_id=actor_id, action='proxy_country_set_manual' if manual else 'proxy_country_cleared', target_type='proxy', target_id=str(proxy.id), payload={'country_code': proxy.country_code}))
     db.commit()
     db.refresh(proxy)
     return proxy

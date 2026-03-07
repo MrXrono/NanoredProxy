@@ -30,3 +30,17 @@ docker compose up --build
 
 ## Notes
 This repository contains a production-oriented scaffold with core API, models, workers, and gateway skeleton. Business logic extension points are marked in code.
+
+
+## Current state
+
+Implemented in repository now:
+- JWT-protected admin API
+- React admin UI with login, dashboard, proxies, accounts, sessions, workers, config and audit pages
+- Basic unit tests for parser/security/config/scoring
+
+Run tests:
+```bash
+cd backend && pytest -q
+cd ../workers && PYTHONPATH=/workspace/NanoredProxy pytest -q
+```
