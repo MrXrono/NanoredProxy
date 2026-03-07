@@ -4,7 +4,8 @@ const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'
 const WS = import.meta.env.VITE_WS_URL || API.replace(/^http/, 'ws')
 
 async function api(path, opts = {}, token) {
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  const headers = { ...(opts.headers || {}) }
+  if (!(opts.body instanceof FormData) && !headers['Content-Type']) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
   const res = await fetch(`${API}${path}`, { ...opts, headers })
   if (!res.ok) {
@@ -44,7 +45,7 @@ function Login({ onLogin }) {
     <div className="login-wrap">
       <form className="card login-card" onSubmit={submit}>
         <h1>NanoredProxy Admin</h1>
-        <p>Login to manage proxy pool, accounts, sessions and workers.</p>
+        <p>Login to manage proxy pool, accounts, sessions, charts and workers.</p>
         <label>Username<input value={username} onChange={e => setUsername(e.target.value)} /></label>
         <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
         {error && <div className="error">{error}</div>}
@@ -77,11 +78,51 @@ function JsonTable({ rows }) {
   )
 }
 
+function StatGrid({ summary }) {
+  return (
+    <div className="grid stats-grid">
+      {Object.entries(summary || {}).map(([k, v]) => (
+        <div className="card stat-card" key={k}><div className="muted">{k}</div><div className="stat">{String(v)}</div></div>
+      ))}
+    </div>
+  )
+}
+
+function Bars({ items, valueKey, labelKey, color = '#38bdf8', formatter = v => v }) {
+  if (!items?.length) return <div className="muted">No chart data</div>
+  const max = Math.max(...items.map(x => Number(x[valueKey] || 0)), 1)
+  return (
+    <div className="bars">
+      {items.map((item, idx) => {
+        const value = Number(item[valueKey] || 0)
+        const width = `${Math.max(3, (value / max) * 100)}%`
+        return (
+          <div className="bar-row" key={`${item[labelKey]}-${idx}`}>
+            <div className="bar-label">{item[labelKey]}</div>
+            <div className="bar-track"><div className="bar-fill" style={{ width, background: color }} /></div>
+            <div className="bar-value">{formatter(value)}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function formatBytes(v) {
+  const n = Number(v || 0)
+  if (n < 1024) return `${n} B`
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`
+  return `${(n / 1024 ** 3).toFixed(2)} GB`
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('nrp_token') || '')
   const [admin, setAdmin] = useState(null)
   const [tab, setTab] = useState('dashboard')
   const [summary, setSummary] = useState(null)
+  const [charts, setCharts] = useState(null)
+  const [stats, setStats] = useState({ countries: [], accounts: [], top: [], worst: [], ab: {} })
   const [proxies, setProxies] = useState([])
   const [accounts, setAccounts] = useState([])
   const [sessions, setSessions] = useState([])
@@ -92,9 +133,10 @@ export default function App() {
   const [proxyImportText, setProxyImportText] = useState('')
   const [configPreview, setConfigPreview] = useState('')
   const [message, setMessage] = useState('')
+  const [chartPeriod, setChartPeriod] = useState('24h')
   const wsRef = useRef(null)
   const reloadTimer = useRef(null)
-  const tabs = useMemo(() => ['dashboard','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
+  const tabs = useMemo(() => ['dashboard','stats','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
 
   function handleLogin(nextToken, nextAdmin) {
     localStorage.setItem('nrp_token', nextToken)
@@ -109,9 +151,10 @@ export default function App() {
     if (wsRef.current) wsRef.current.close()
   }
 
-  async function loadAll() {
-    const [summaryData, proxyData, accountData, sessionData, workerData, settingsData, configData, auditData, meData] = await Promise.all([
+  async function loadAll(selectedPeriod = chartPeriod) {
+    const [summaryData, chartsData, proxyData, accountData, sessionData, workerData, settingsData, configData, auditData, meData, countriesData, accountStatsData, topData, worstData, abData] = await Promise.all([
       api('/dashboard/summary', {}, token),
+      api(`/dashboard/charts?period=${encodeURIComponent(selectedPeriod)}`, {}, token),
       api('/proxies', {}, token),
       api('/accounts', {}, token),
       api('/sessions', {}, token),
@@ -120,8 +163,14 @@ export default function App() {
       api('/config/proxychains/preview', {}, token),
       api('/audit/logs', {}, token),
       api('/admin/auth/me', {}, token),
+      api('/stats/countries', {}, token),
+      api('/stats/accounts', {}, token),
+      api('/stats/proxies/top', {}, token),
+      api('/stats/proxies/worst', {}, token),
+      api('/stats/ab', {}, token),
     ])
     setSummary(summaryData)
+    setCharts(chartsData)
     setProxies(proxyData.items || [])
     setAccounts(accountData.items || [])
     setSessions(sessionData.items || [])
@@ -130,6 +179,7 @@ export default function App() {
     setConfigPreview(configData.content || '')
     setAudit(auditData.items || [])
     setAdmin(meData)
+    setStats({ countries: countriesData.items || [], accounts: accountStatsData.items || [], top: topData.items || [], worst: worstData.items || [], ab: abData || {} })
   }
 
   function scheduleReload() {
@@ -159,11 +209,6 @@ export default function App() {
         if (!String(data.type || '').startsWith('system.heartbeat')) scheduleReload()
       } catch {}
     }
-    ws.onclose = () => {
-      if (token) setTimeout(() => {
-        if (wsRef.current === ws) wsRef.current = null
-      }, 1000)
-    }
     return () => ws.close()
   }, [token])
 
@@ -183,6 +228,18 @@ export default function App() {
   async function killSession(id) { await api(`/sessions/${id}/kill`, { method: 'POST', body: JSON.stringify({ reason: 'manual kill from UI' }) }, token); await loadAll() }
   async function workerAction(name, action) { await api(`/system/workers/${name}/${action}`, { method: 'POST' }, token); await loadAll() }
   async function toggleProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }, token); await loadAll() }
+  async function quarantineProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'quarantine' : 'unquarantine'}`, { method: 'POST' }, token); await loadAll() }
+  async function recheckProxy(id) { await api(`/proxies/${id}/recheck`, { method: 'POST' }, token); await loadAll() }
+  async function setCountry(id, current) {
+    const value = prompt('Country code', current || '')
+    if (value === null) return
+    if (!value.trim()) {
+      await api(`/proxies/${id}/clear-country`, { method: 'POST' }, token)
+    } else {
+      await api(`/proxies/${id}/set-country`, { method: 'POST', body: JSON.stringify({ country_code: value.trim().toLowerCase() }) }, token)
+    }
+    await loadAll()
+  }
 
   if (!token) return <Login onLogin={handleLogin} />
 
@@ -194,7 +251,7 @@ export default function App() {
           <div className="muted">Logged in as {admin?.username || 'admin'}</div>
         </div>
         <div className="actions">
-          <button onClick={loadAll}>Refresh</button>
+          <button onClick={() => loadAll()}>Refresh</button>
           <button className="secondary" onClick={logout}>Logout</button>
         </div>
       </header>
@@ -207,10 +264,33 @@ export default function App() {
 
       {tab === 'dashboard' && summary && (
         <>
-          <div className="grid stats-grid">
-            {Object.entries(summary).map(([k,v]) => <div className="card stat-card" key={k}><div className="muted">{k}</div><div className="stat">{String(v)}</div></div>)}
+          <StatGrid summary={summary} />
+          <Section title="Traffic charts" actions={<div className="actions"><button className={chartPeriod==='24h'?'active':''} onClick={() => { setChartPeriod('24h'); loadAll('24h') }}>24h</button><button className={chartPeriod==='7d'?'active':''} onClick={() => { setChartPeriod('7d'); loadAll('7d') }}>7d</button><button className={chartPeriod==='30d'?'active':''} onClick={() => { setChartPeriod('30d'); loadAll('30d') }}>30d</button></div>}>
+            <div className="grid two-col">
+              <div>
+                <h4>Traffic by bucket</h4>
+                <Bars items={(charts?.traffic_by_bucket || []).slice(-12)} valueKey="total_bytes" labelKey="bucket_start" formatter={formatBytes} />
+              </div>
+              <div>
+                <h4>Country distribution</h4>
+                <Bars items={(charts?.country_distribution || []).slice(0, 10)} valueKey="working_proxies" labelKey="country_code" color="#22c55e" />
+              </div>
+            </div>
+          </Section>
+          <Section title="Best latency proxies"><JsonTable rows={charts?.latency_top || []} /></Section>
+          <Section title="Top daily speed proxies"><JsonTable rows={charts?.speed_top || []} /></Section>
+        </>
+      )}
+
+      {tab === 'stats' && (
+        <>
+          <Section title="Countries"><JsonTable rows={stats.countries} /></Section>
+          <Section title="Account statistics"><JsonTable rows={stats.accounts} /></Section>
+          <div className="grid two-col">
+            <Section title="Top proxies"><JsonTable rows={stats.top} /></Section>
+            <Section title="Worst proxies"><JsonTable rows={stats.worst} /></Section>
           </div>
-          <Section title="Quick summary"><pre>{JSON.stringify(summary, null, 2)}</pre></Section>
+          <Section title="A/B routing"><pre>{JSON.stringify(stats.ab, null, 2)}</pre></Section>
         </>
       )}
 
@@ -223,12 +303,24 @@ user:pass@5.6.7.8:1080" />
           <Section title={`Proxy pool (${proxies.length})`}>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>id</th><th>host</th><th>port</th><th>status</th><th>country</th><th>score</th><th>latency</th><th>actions</th></tr></thead>
+                <thead><tr><th>id</th><th>host</th><th>port</th><th>status</th><th>country</th><th>score</th><th>stability</th><th>latency</th><th>actions</th></tr></thead>
                 <tbody>
                   {proxies.map(p => (
                     <tr key={p.id}>
-                      <td>{p.id}</td><td>{p.host}</td><td>{p.port}</td><td>{p.status}</td><td>{p.country_code || '-'}</td><td>{p.composite_score ?? '-'}</td><td>{p.avg_latency_day_ms ?? '-'}</td>
-                      <td className="actions"><button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'Disable' : 'Enable'}</button></td>
+                      <td>{p.id}</td>
+                      <td>{p.host}</td>
+                      <td>{p.port}</td>
+                      <td>{p.status}{p.is_quarantined ? ' / quarantine' : ''}</td>
+                      <td>{p.country_code || '-'}</td>
+                      <td>{p.composite_score ?? '-'}</td>
+                      <td>{p.stability_score ?? '-'}</td>
+                      <td>{p.avg_latency_day_ms ?? '-'}</td>
+                      <td className="actions stack-actions">
+                        <button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'Disable' : 'Enable'}</button>
+                        <button onClick={() => quarantineProxy(p.id, !p.is_quarantined)}>{p.is_quarantined ? 'Unquarantine' : 'Quarantine'}</button>
+                        <button onClick={() => setCountry(p.id, p.country_code)}>Country</button>
+                        <button onClick={() => recheckProxy(p.id)}>Recheck</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -243,7 +335,7 @@ user:pass@5.6.7.8:1080" />
       {tab === 'sessions' && (
         <Section title="Sessions">
           <div className="table-wrap"><table><thead><tr><th>id</th><th>login</th><th>client_ip</th><th>proxy</th><th>status</th><th>connections</th><th>traffic</th><th>actions</th></tr></thead><tbody>
-            {sessions.map(s => <tr key={s.id}><td>{s.id}</td><td>{s.client_login}</td><td>{s.client_ip}</td><td>{s.assigned_proxy_id ?? '-'}</td><td>{s.status}</td><td>{s.active_connections_count}/{s.connections_count}</td><td>{s.total_bytes}</td><td><button onClick={() => killSession(s.id)}>Kill</button></td></tr>)}
+            {sessions.map(s => <tr key={s.id}><td>{s.id}</td><td>{s.client_login}</td><td>{s.client_ip}</td><td>{s.assigned_proxy_id ?? '-'}</td><td>{s.status}</td><td>{s.active_connections_count}/{s.connections_count}</td><td>{formatBytes(s.total_bytes)}</td><td><button onClick={() => killSession(s.id)}>Kill</button></td></tr>)}
           </tbody></table></div>
         </Section>
       )}

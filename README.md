@@ -45,3 +45,11 @@ Current repository contains implemented backend API, gateway base routing, worke
 cd backend && pytest -q
 cd ../frontend && npm run build
 ```
+
+
+## Production
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Nginx reverse proxy config lives in `deploy/nginx/`.

@@ -1,5 +1,7 @@
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
-from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -28,11 +30,22 @@ async def global_stats(db: Session = Depends(get_db)):
 
 
 @router.get('/traffic')
-async def traffic_stats(scope_type: str = 'global', scope_id: str | None = None, bucket_type: str = 'hour', db: Session = Depends(get_db)):
-    stmt = select(TrafficRollup).where(TrafficRollup.scope_type == scope_type, TrafficRollup.bucket_type == bucket_type).order_by(TrafficRollup.bucket_start.desc()).limit(200)
+async def traffic_stats(
+    scope_type: str = 'global',
+    scope_id: str | None = None,
+    bucket_type: str = 'hour',
+    from_ts: datetime | None = Query(default=None, alias='from'),
+    to_ts: datetime | None = Query(default=None, alias='to'),
+    db: Session = Depends(get_db),
+):
+    stmt = select(TrafficRollup).where(TrafficRollup.scope_type == scope_type, TrafficRollup.bucket_type == bucket_type)
     if scope_id is not None:
         stmt = stmt.where(TrafficRollup.scope_id == scope_id)
-    items = db.scalars(stmt).all()
+    if from_ts is not None:
+        stmt = stmt.where(TrafficRollup.bucket_start >= from_ts)
+    if to_ts is not None:
+        stmt = stmt.where(TrafficRollup.bucket_start <= to_ts)
+    items = db.scalars(stmt.order_by(TrafficRollup.bucket_start.desc()).limit(500)).all()
     return {'scope_type': scope_type, 'scope_id': scope_id, 'bucket_type': bucket_type, 'items': [{'bucket_start': x.bucket_start, 'bytes_in': x.bytes_in, 'bytes_out': x.bytes_out, 'total_bytes': x.bytes_in + x.bytes_out, 'sessions_count': x.sessions_count, 'connections_count': x.connections_count} for x in items]}
 
 
@@ -49,15 +62,28 @@ async def account_stats(db: Session = Depends(get_db)):
 
 
 @router.get('/proxies/top')
-async def top_proxies(limit: int = 20, db: Session = Depends(get_db)):
-    rows = db.execute(select(Proxy.id, Proxy.host, ProxyAggregate.composite_score, ProxyAggregate.stability_score).join(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id, isouter=True).order_by(ProxyAggregate.composite_score.desc().nullslast()).limit(limit)).all()
-    return {'items': [{'id': id_, 'host': str(host), 'composite_score': float(score) if score is not None else None, 'stability_score': float(stability) if stability is not None else None} for id_, host, score, stability in rows], 'limit': limit}
+async def top_proxies(limit: int = 20, country_code: str | None = None, sort_by: str = 'composite_score', db: Session = Depends(get_db)):
+    sort_col = {
+        'composite_score': ProxyAggregate.composite_score,
+        'stability_score': ProxyAggregate.stability_score,
+        'avg_latency_day_ms': ProxyAggregate.avg_latency_day_ms,
+        'avg_download_day_mbps': ProxyAggregate.avg_download_day_mbps,
+    }.get(sort_by, ProxyAggregate.composite_score)
+    stmt = select(Proxy.id, Proxy.host, Proxy.country_code, ProxyAggregate.composite_score, ProxyAggregate.stability_score, ProxyAggregate.avg_latency_day_ms, ProxyAggregate.avg_download_day_mbps).join(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id, isouter=True)
+    if country_code:
+        stmt = stmt.where(Proxy.country_code == country_code)
+    order = sort_col.asc().nullslast() if sort_by == 'avg_latency_day_ms' else sort_col.desc().nullslast()
+    rows = db.execute(stmt.order_by(order).limit(limit)).all()
+    return {'items': [{'id': id_, 'host': str(host), 'country_code': cc, 'composite_score': float(score) if score is not None else None, 'stability_score': float(stability) if stability is not None else None, 'avg_latency_day_ms': float(lat) if lat is not None else None, 'avg_download_day_mbps': float(down) if down is not None else None} for id_, host, cc, score, stability, lat, down in rows], 'limit': limit, 'sort_by': sort_by}
 
 
 @router.get('/proxies/worst')
-async def worst_proxies(limit: int = 20, db: Session = Depends(get_db)):
-    rows = db.execute(select(Proxy.id, Proxy.host, ProxyAggregate.composite_score, ProxyAggregate.stability_score).join(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id, isouter=True).order_by(ProxyAggregate.composite_score.asc().nullslast()).limit(limit)).all()
-    return {'items': [{'id': id_, 'host': str(host), 'composite_score': float(score) if score is not None else None, 'stability_score': float(stability) if stability is not None else None} for id_, host, score, stability in rows], 'limit': limit}
+async def worst_proxies(limit: int = 20, country_code: str | None = None, db: Session = Depends(get_db)):
+    stmt = select(Proxy.id, Proxy.host, Proxy.country_code, ProxyAggregate.composite_score, ProxyAggregate.stability_score).join(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id, isouter=True)
+    if country_code:
+        stmt = stmt.where(Proxy.country_code == country_code)
+    rows = db.execute(stmt.order_by(ProxyAggregate.composite_score.asc().nullslast()).limit(limit)).all()
+    return {'items': [{'id': id_, 'host': str(host), 'country_code': cc, 'composite_score': float(score) if score is not None else None, 'stability_score': float(stability) if stability is not None else None} for id_, host, cc, score, stability in rows], 'limit': limit}
 
 
 @router.get('/ab')

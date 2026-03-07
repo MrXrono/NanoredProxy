@@ -103,7 +103,10 @@ def set_country(db: Session, proxy: Proxy, country_code: str | None, manual: boo
     proxy.country_source = 'manual' if manual and country_code else 'unknown'
     proxy.country_manual_override = bool(manual and country_code)
     proxy.last_geo_attempt_at = datetime.utcnow()
-    db.add(ProxyGeoAttempt(proxy_id=proxy.id, success=bool(country_code), detected_country_code=proxy.country_code, source='manual' if manual else 'auto'))
+    geo = ProxyGeoAttempt(proxy_id=proxy.id, success=bool(country_code), detected_country_code=proxy.country_code, source='manual' if manual else 'auto')
+    if db.bind is not None and db.bind.dialect.name == 'sqlite':
+        geo.id = _sqlite_next_id(db, ProxyGeoAttempt)
+    db.add(geo)
     _add_audit(db, actor_type='admin', actor_id=actor_id, action='proxy_country_set_manual' if manual else 'proxy_country_cleared', target_type='proxy', target_id=str(proxy.id), payload={'country_code': proxy.country_code})
     db.commit()
     db.refresh(proxy)

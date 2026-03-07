@@ -1,0 +1,100 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nanored}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nanored}
+      POSTGRES_DB: ${POSTGRES_DB:-nanoredproxy}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - backend
+      - redis
+    ports:
+      - "${SOCKS5_LISTEN_PORT:-1080}:1080"
+
+  worker-availability:
+    build: ./workers
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    command: ["python", "-m", "workers.availability.worker"]
+
+  worker-speedtest:
+    build: ./workers
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    command: ["python", "-m", "workers.speedtest.worker"]
+
+  worker-geo:
+    build: ./workers
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    command: ["python", "-m", "workers.geo.worker"]
+
+  worker-aggregate:
+    build: ./workers
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    command: ["python", "-m", "workers.aggregate.worker"]
+
+  worker-reconcile:
+    build: ./workers
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    command: ["python", "-m", "workers.reconcile.worker"]
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres_data:

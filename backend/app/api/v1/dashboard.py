@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import require_admin
-from app.services.dashboard_service import get_summary
+from app.services.dashboard_service import get_charts, get_summary
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
@@ -15,4 +15,4 @@ async def summary(db: Session = Depends(get_db)):
 
 @router.get('/charts')
 async def charts(period: str = '24h', db: Session = Depends(get_db)):
-    return {'period': period, 'traffic_by_hour': [], 'sessions_by_hour': [], 'latency_by_hour': [], 'speed_by_day': [], 'country_distribution': []}
+    return get_charts(db, period=period)

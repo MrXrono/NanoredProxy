@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -15,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 from app.core.db import Base, get_db
 from app.main import app
-from app.models import Account, AdminUser, SchedulerState, SystemSetting
+from app.models import Account, AdminUser, SchedulerState, SystemSetting, TrafficRollup
 
 
 @compiles(INET, 'sqlite')
@@ -40,6 +41,7 @@ def client(monkeypatch):
         db.add(SystemSetting(key='ab_strategy_split', value={'A': 50, 'B': 50}))
         db.add(SystemSetting(key='sticky_score_delta_threshold', value={'value': 0.15}))
         db.add(SchedulerState(worker_name='availability_checker', status='idle'))
+        db.add(TrafficRollup(id=1, scope_type='global', scope_id='global', bucket_type='hour', bucket_start=datetime(2026, 3, 6, 10, 0, tzinfo=timezone.utc), bytes_in=1000, bytes_out=2000, sessions_count=2, connections_count=4))
         db.commit()
 
     def override_get_db():
@@ -77,6 +79,23 @@ def test_import_proxy_and_list(client):
     assert resp.json()['total'] == 1
 
 
+def test_proxy_actions_and_dashboard_charts(client):
+    token = _token(client)
+    headers = {'Authorization': f'Bearer {token}'}
+    resp = client.post('/api/v1/proxies/import/text', headers=headers, json={'text': '1.2.3.4:1080'})
+    proxy_id = client.get('/api/v1/proxies', headers=headers).json()['items'][0]['id']
+    assert client.post(f'/api/v1/proxies/{proxy_id}/set-country', headers=headers, json={'country_code': 'de'}).status_code == 200
+    assert client.post(f'/api/v1/proxies/{proxy_id}/quarantine', headers=headers).status_code == 200
+    charts = client.get('/api/v1/dashboard/charts?period=24h', headers=headers)
+    assert charts.status_code == 200
+    data = charts.json()
+    assert data['period'] == '24h'
+    assert 'traffic_by_bucket' in data
+    usage = client.get(f'/api/v1/proxies/{proxy_id}/routing-usage', headers=headers)
+    assert usage.status_code == 200
+    assert usage.json()['proxy_id'] == proxy_id
+
+
 def test_worker_pause_and_resume(client):
     token = _token(client)
     headers = {'Authorization': f'Bearer {token}'}
@@ -84,3 +103,5 @@ def test_worker_pause_and_resume(client):
     assert resp.status_code == 200
     resp = client.get('/api/v1/system/workers', headers=headers)
     assert resp.json()['items'][0]['status'] == 'paused'
+    resp = client.post('/api/v1/system/workers/availability_checker/resume', headers=headers)
+    assert resp.status_code == 200

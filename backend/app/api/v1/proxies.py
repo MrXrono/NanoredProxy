@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import func, select
+
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -193,4 +195,18 @@ async def proxy_geo_attempts(proxy_id: int, limit: int = Query(default=50, le=20
 
 @router.get('/{proxy_id}/routing-usage')
 async def proxy_routing_usage(proxy_id: int, db: Session = Depends(get_db)):
-    return {'items': [], 'proxy_id': proxy_id}
+    proxy = db_get_proxy(db, proxy_id)
+    if not proxy:
+        raise HTTPException(status_code=404, detail='Proxy not found')
+    from app.models import RoutingEvent, Session as SessionModel, SessionConnection
+    sessions_total = db.scalar(select(func.count()).select_from(SessionModel).where((SessionModel.assigned_proxy_id == proxy_id) | (SessionModel.sticky_proxy_id == proxy_id))) or 0
+    open_connections = db.scalar(select(func.count()).select_from(SessionConnection).where(SessionConnection.proxy_id == proxy_id, SessionConnection.state == 'open')) or 0
+    events = db.scalars(select(RoutingEvent).where((RoutingEvent.old_proxy_id == proxy_id) | (RoutingEvent.new_proxy_id == proxy_id)).order_by(RoutingEvent.created_at.desc()).limit(20)).all()
+    return {
+        'proxy_id': proxy_id,
+        'sessions_total': sessions_total,
+        'open_connections': open_connections,
+        'recent_events': [
+            {'id': e.id, 'session_id': str(e.session_id) if e.session_id else None, 'old_proxy_id': e.old_proxy_id, 'new_proxy_id': e.new_proxy_id, 'event_type': e.event_type, 'reason': e.reason, 'created_at': e.created_at} for e in events
+        ],
+    }
