@@ -29,6 +29,15 @@ async def open_session(account_id: int, client_ip: str, client_login: str):
     return await _request('POST', '/internal/v1/gateway/session/open', {'account_id': account_id, 'client_ip': client_ip, 'client_login': client_login})
 
 
+async def reroute_session(session_id: str, reason: str, exclude_proxy_ids: list[int] | None = None, prefer_sticky: bool = False):
+    return await _request('POST', '/internal/v1/gateway/session/reroute', {
+        'session_id': session_id,
+        'reason': reason,
+        'exclude_proxy_ids': exclude_proxy_ids or [],
+        'prefer_sticky': prefer_sticky,
+    })
+
+
 async def open_connection(session_id: str, target_host: str, target_port: int):
     return await _request('POST', '/internal/v1/gateway/connection/open', {'session_id': session_id, 'target_host': target_host, 'target_port': target_port})
 

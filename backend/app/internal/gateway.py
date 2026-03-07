@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_db
 from app.models import Account, Proxy, Session as SessionModel, SessionConnection
-from app.services.routing_service import close_connection, close_session, ensure_connection_proxy, open_connection, open_session, update_traffic
+from app.services.routing_service import close_connection, close_session, ensure_connection_proxy, open_connection, open_session, reroute_session_proxy, update_traffic
 from app.services.runtime_state import get_kill_reason, is_kill_requested
 
 router = APIRouter(prefix='/internal/v1/gateway', tags=['gateway-internal'])
@@ -47,6 +47,22 @@ async def session_open(payload: dict, db: Session = Depends(get_db), _internal: 
     session = open_session(db, account, payload.get('client_ip', '0.0.0.0'), payload.get('client_login', account.username))
     proxy = db.get(Proxy, session.assigned_proxy_id) if session.assigned_proxy_id else None
     return {'session_id': str(session.id), 'assigned_proxy': _proxy_payload(proxy), 'strategy_variant': session.strategy_variant}
+
+
+@router.post('/session/reroute')
+async def session_reroute(payload: dict, db: Session = Depends(get_db), _internal: bool = Depends(_require_internal)):
+    session = db.get(SessionModel, payload.get('session_id'))
+    if not session:
+        return {'ok': False}
+    exclude_proxy_ids = {int(x) for x in payload.get('exclude_proxy_ids', []) if x is not None}
+    proxy = reroute_session_proxy(
+        db,
+        session,
+        reason=payload.get('reason', 'manual reroute'),
+        exclude_proxy_ids=exclude_proxy_ids,
+        prefer_sticky=bool(payload.get('prefer_sticky', False)),
+    )
+    return {'ok': True, 'proxy': _proxy_payload(proxy), 'session_id': str(session.id)}
 
 
 @router.post('/connection/open')

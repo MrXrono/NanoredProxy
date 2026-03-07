@@ -7,6 +7,7 @@ from app.auth import close_connection as api_close_connection
 from app.auth import close_session as api_close_session
 from app.auth import open_connection as api_open_connection
 from app.auth import open_session as api_open_session
+from app.auth import reroute_session as api_reroute_session
 from app.auth import resolve_auth, session_state
 from app.config import KILL_POLL_INTERVAL, LISTEN_HOST, LISTEN_PORT, UPSTREAM_CONNECT_TIMEOUT
 from app.connection_manager import connection_manager
@@ -177,17 +178,38 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             close_reason = 'command not supported'
             return
 
-        conn_resp = await api_open_connection(session_id, target_host, target_port)
-        proxy = conn_resp.get("proxy")
-        connection_id = conn_resp.get("connection_id")
-        if not proxy:
-            writer.write(_reply(REPLY_GENERAL_FAILURE))
-            await writer.drain()
-            close_state = 'failed'
-            close_reason = 'no upstream proxy available'
-            return
-        connection_manager.add(connection_id, {"session_id": session_id, "proxy": proxy})
-        upstream_reader, upstream_writer = await open_via_upstream(proxy, target_host, target_port)
+        attempted_proxy_ids = []
+        for attempt in range(3):
+            conn_resp = await api_open_connection(session_id, target_host, target_port)
+            proxy = conn_resp.get("proxy")
+            connection_id = conn_resp.get("connection_id")
+            if not proxy:
+                writer.write(_reply(REPLY_GENERAL_FAILURE))
+                await writer.drain()
+                close_state = 'failed'
+                close_reason = 'no upstream proxy available'
+                return
+            connection_manager.add(connection_id, {"session_id": session_id, "proxy": proxy})
+            try:
+                upstream_reader, upstream_writer = await open_via_upstream(proxy, target_host, target_port)
+                break
+            except Exception as exc:
+                attempted_proxy_ids.append(proxy.get('id'))
+                bytes_in, bytes_out = await traffic_meter.flush_all(session_id, connection_id)
+                await api_close_connection(connection_id, bytes_in, bytes_out, 'failed', f'upstream connect failed: {exc}')
+                connection_manager.remove(connection_id)
+                traffic_meter.clear(connection_id)
+                connection_id = None
+                if attempt >= 2:
+                    raise
+                reroute_resp = await api_reroute_session(
+                    session_id,
+                    reason=f'upstream connect failed for {target_host}:{target_port}',
+                    exclude_proxy_ids=[pid for pid in attempted_proxy_ids if pid is not None],
+                    prefer_sticky=False,
+                )
+                if not reroute_resp.get('proxy'):
+                    raise RuntimeError(f'no alternate upstream proxy available after failure: {exc}')
         writer.write(_reply(REPLY_SUCCEEDED))
         await writer.drain()
 
@@ -199,10 +221,27 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 total_in += task.result()
             elif task is task2 and not task.cancelled():
                 total_out += task.result()
-        for task in pending:
-            task.cancel()
+
+        if task1 in done:
             with suppress(Exception):
-                await task
+                upstream_writer.write_eof()
+                await upstream_writer.drain()
+        if task2 in done:
+            with suppress(Exception):
+                writer.write_eof()
+                await writer.drain()
+
+        if pending:
+            more_done, still_pending = await asyncio.wait(pending, timeout=15)
+            for task in more_done:
+                if task is task1 and not task.cancelled():
+                    total_in += task.result()
+                elif task is task2 and not task.cancelled():
+                    total_out += task.result()
+            for task in still_pending:
+                task.cancel()
+                with suppress(Exception):
+                    await task
         bytes_in, bytes_out = await traffic_meter.flush_all(session_id, connection_id)
         total_in = max(total_in, bytes_in)
         total_out = max(total_out, bytes_out)

@@ -45,7 +45,13 @@ def _normalize_client_ip(client_ip: str):
         return client_ip
 
 
-def select_proxy_for_account(db: Session, account: Account, strategy: str, sticky_proxy_id: int | None = None) -> Proxy | None:
+def select_proxy_for_account(
+    db: Session,
+    account: Account,
+    strategy: str,
+    sticky_proxy_id: int | None = None,
+    exclude_proxy_ids: set[int] | None = None,
+) -> Proxy | None:
     stmt = (
         select(Proxy)
         .outerjoin(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id)
@@ -53,6 +59,8 @@ def select_proxy_for_account(db: Session, account: Account, strategy: str, stick
     )
     if account.account_type == 'country' and account.country_code:
         stmt = stmt.where(Proxy.country_code == account.country_code)
+    if exclude_proxy_ids:
+        stmt = stmt.where(Proxy.id.not_in(sorted(exclude_proxy_ids)))
     non_quarantine = db.scalars(stmt.where(Proxy.is_quarantined.is_(False)).order_by(*_score_columns(strategy)).limit(50)).all()
     candidates = non_quarantine or db.scalars(stmt.order_by(*_score_columns(strategy)).limit(50)).all()
     if not candidates:
@@ -66,6 +74,33 @@ def select_proxy_for_account(db: Session, account: Account, strategy: str, stick
             if best_rating - sticky_rating <= _sticky_rating_threshold(db):
                 return sticky
     return best
+
+
+def reroute_session_proxy(
+    db: Session,
+    session: SessionModel,
+    reason: str,
+    exclude_proxy_ids: set[int] | None = None,
+    prefer_sticky: bool = True,
+) -> Proxy | None:
+    account = db.get(Account, session.account_id)
+    if not account:
+        return None
+    next_proxy = select_proxy_for_account(
+        db,
+        account,
+        session.strategy_variant,
+        sticky_proxy_id=session.sticky_proxy_id if prefer_sticky else None,
+        exclude_proxy_ids=exclude_proxy_ids,
+    )
+    old_id = session.assigned_proxy_id
+    session.assigned_proxy_id = next_proxy.id if next_proxy else None
+    if next_proxy:
+        session.sticky_proxy_id = next_proxy.id
+    set_session_runtime(str(session.id), {'status': session.status, 'assigned_proxy_id': session.assigned_proxy_id, 'sticky_proxy_id': session.sticky_proxy_id})
+    db.add(RoutingEvent(session_id=session.id, old_proxy_id=old_id, new_proxy_id=next_proxy.id if next_proxy else None, event_type='reroute_new_connections', reason=reason, strategy_variant=session.strategy_variant))
+    db.commit()
+    return next_proxy
 
 
 def open_session(db: Session, account: Account, client_ip: str, client_login: str) -> SessionModel:
@@ -99,19 +134,10 @@ def open_session(db: Session, account: Account, client_ip: str, client_login: st
 
 
 def ensure_connection_proxy(db: Session, session: SessionModel) -> Proxy | None:
-    account = db.get(Account, session.account_id)
     proxy = db.get(Proxy, session.assigned_proxy_id) if session.assigned_proxy_id else None
     if proxy and proxy.is_enabled and proxy.status in ('online', 'degraded') and not proxy.is_quarantined:
         return proxy
-    next_proxy = select_proxy_for_account(db, account, session.strategy_variant, sticky_proxy_id=session.sticky_proxy_id)
-    old_id = session.assigned_proxy_id
-    session.assigned_proxy_id = next_proxy.id if next_proxy else None
-    if next_proxy:
-        session.sticky_proxy_id = next_proxy.id
-    set_session_runtime(str(session.id), {'status': session.status, 'assigned_proxy_id': session.assigned_proxy_id, 'sticky_proxy_id': session.sticky_proxy_id})
-    db.add(RoutingEvent(session_id=session.id, old_proxy_id=old_id, new_proxy_id=next_proxy.id if next_proxy else None, event_type='reroute_new_connections', reason='assigned proxy unavailable', strategy_variant=session.strategy_variant))
-    db.commit()
-    return next_proxy
+    return reroute_session_proxy(db, session, reason='assigned proxy unavailable', prefer_sticky=True)
 
 
 def open_connection(db: Session, session: SessionModel, target_host: str, target_port: int) -> SessionConnection:
