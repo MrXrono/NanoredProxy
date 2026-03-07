@@ -1,22 +1,25 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.db import get_db
+from app.models import SystemSetting
 from app.schemas.common import OkResponse
 
 router = APIRouter()
-_SETTINGS = {
-    "latency_threshold_ms": 1500,
-    "speedtest_interval_hours": 6,
-    "speedtest_pause_between_tests_minutes": 5,
-    "speedtest_resume_after_idle_minutes": 10,
-    "quarantine_batch_size": 10,
-    "quarantine_window_size": 5,
-    "quarantine_pause_seconds": 2,
-}
+
 
 @router.get('')
-async def get_settings():
-    return _SETTINGS
+async def get_settings(db: Session = Depends(get_db)):
+    rows = db.scalars(select(SystemSetting).order_by(SystemSetting.key.asc())).all()
+    return {row.key: row.value for row in rows}
+
 
 @router.patch('', response_model=OkResponse)
-async def patch_settings(payload: dict):
-    _SETTINGS.update(payload)
+async def patch_settings(payload: dict, db: Session = Depends(get_db)):
+    for key, value in payload.items():
+        row = db.get(SystemSetting, key)
+        if row:
+            row.value = value if isinstance(value, dict) else {'value': value}
+    db.commit()
     return OkResponse()
