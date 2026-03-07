@@ -7,7 +7,7 @@ from app.auth import close_connection as api_close_connection
 from app.auth import close_session as api_close_session
 from app.auth import open_connection as api_open_connection
 from app.auth import open_session as api_open_session
-from app.auth import resolve_auth
+from app.auth import resolve_auth, session_state
 from app.config import LISTEN_HOST, LISTEN_PORT
 from app.connection_manager import connection_manager
 from app.kill_switch import kill_requested
@@ -214,7 +214,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         with suppress(Exception):
             await writer.wait_closed()
         if session_id:
-            await api_close_session(session_id, "closed")
+            try:
+                state = await session_state(session_id)
+                final_status = 'killed' if state.get('kill_requested') else 'closed'
+            except Exception:
+                final_status = 'closed'
+            await api_close_session(session_id, final_status)
             session_manager.delete(session_id)
         if connection_id:
             connection_manager.remove(connection_id)

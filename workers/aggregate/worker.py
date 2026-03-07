@@ -15,7 +15,7 @@ def main():
     while True:
         threshold = float(get_setting('latency_threshold_ms', {'value': 1500}).get('value', 1500))
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("select id from proxies order by id asc")
+            cur.execute('select id from proxies order by id asc')
             proxy_ids = [r['id'] for r in cur.fetchall()]
             now = datetime.now(timezone.utc)
             for proxy_id in proxy_ids:
@@ -52,7 +52,33 @@ def main():
                        composite_score=excluded.composite_score, quarantine_score=excluded.quarantine_score, last_score_recalc_at=excluded.last_score_recalc_at, updated_at=excluded.updated_at""",
                     (proxy_id, all_row['avg_latency_all'], day_row['avg_latency_day'], hour_row['avg_latency_hour'], day_row['min_latency_day'], day_row['max_latency_day'], sr_all, sr_day, sr_hour, speed_row['avg_download_day'], speed_row['avg_upload_day'], speed_row['avg_ping_day'], speed_row['avg_jitter_day'], total, speed_row['total_speedtests'] or 0, all_row['success_checks'] or 0, total - (all_row['success_checks'] or 0), stability, score, 1.0 - stability, now, now),
                 )
-                cur.execute("update proxies set is_quarantined=%s, status=case when %s then 'quarantine' else status end where id=%s", (quarantine, quarantine, proxy_id))
+                cur.execute("update proxies set is_quarantined=%s, status=case when %s then 'quarantine' when status='quarantine' and not %s then 'checking' else status end where id=%s", (quarantine, quarantine, quarantine, proxy_id))
+
+            cur.execute("select distinct country_code from proxies where country_code is not null")
+            countries = [r['country_code'] for r in cur.fetchall()]
+            for cc in countries:
+                cur.execute(
+                    """insert into country_aggregates(country_code, total_proxies, working_proxies, online_proxies, degraded_proxies, quarantined_proxies,
+                       avg_latency_day_ms, avg_download_day_mbps, avg_upload_day_mbps, active_sessions, bytes_in, bytes_out, updated_at)
+                       select %s,
+                           count(*),
+                           count(*) filter (where p.status in ('online','degraded') and p.is_enabled=true and p.is_quarantined=false),
+                           count(*) filter (where p.status='online'),
+                           count(*) filter (where p.status='degraded'),
+                           count(*) filter (where p.is_quarantined=true),
+                           avg(pa.avg_latency_day_ms), avg(pa.avg_download_day_mbps), avg(pa.avg_upload_day_mbps),
+                           (select count(*) from sessions s join accounts a on a.id=s.account_id where s.status='active' and a.country_code=%s),
+                           coalesce((select sum(bytes_in) from traffic_rollups tr where tr.scope_type='country' and tr.scope_id=%s), 0),
+                           coalesce((select sum(bytes_out) from traffic_rollups tr where tr.scope_type='country' and tr.scope_id=%s), 0),
+                           %s
+                       from proxies p left join proxy_aggregates pa on pa.proxy_id=p.id where p.country_code=%s
+                       on conflict (country_code) do update set total_proxies=excluded.total_proxies, working_proxies=excluded.working_proxies,
+                       online_proxies=excluded.online_proxies, degraded_proxies=excluded.degraded_proxies, quarantined_proxies=excluded.quarantined_proxies,
+                       avg_latency_day_ms=excluded.avg_latency_day_ms, avg_download_day_mbps=excluded.avg_download_day_mbps,
+                       avg_upload_day_mbps=excluded.avg_upload_day_mbps, active_sessions=excluded.active_sessions, bytes_in=excluded.bytes_in,
+                       bytes_out=excluded.bytes_out, updated_at=excluded.updated_at""",
+                    (cc, cc, cc, cc, now, cc),
+                )
             conn.commit()
         log.info('aggregate recompute complete')
         time.sleep(30)

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Account, Proxy, ProxyAggregate, RoutingEvent, Session as SessionModel, SessionConnection
+from app.models import Account, Proxy, ProxyAggregate, RoutingEvent, Session as SessionModel, SessionConnection, SystemSetting
+from app.services.runtime_state import is_kill_requested, set_active_sessions_count, set_session_runtime
+from app.services.traffic_service import apply_traffic, connection_closed, connection_opened, session_closed, session_opened
 
 
-def choose_strategy() -> str:
-    return 'A' if random.randint(1, 100) <= 50 else 'B'
+def choose_strategy(db: Session | None = None) -> str:
+    split_a = 50
+    if db is not None:
+        setting = db.get(SystemSetting, 'ab_strategy_split')
+        if setting and isinstance(setting.value, dict):
+            split_a = int(setting.value.get('A', 50))
+    return 'A' if random.randint(1, 100) <= split_a else 'B'
 
 
 def _score_columns(strategy: str):
@@ -23,11 +30,18 @@ def _score_columns(strategy: str):
     return [latency.asc(), speed.desc(), stability.desc(), composite.desc()]
 
 
+def _sticky_delta_threshold(db: Session) -> float:
+    setting = db.get(SystemSetting, 'sticky_score_delta_threshold')
+    if setting and isinstance(setting.value, dict):
+        return float(setting.value.get('value', 0.15))
+    return 0.15
+
+
 def select_proxy_for_account(db: Session, account: Account, strategy: str, sticky_proxy_id: int | None = None) -> Proxy | None:
     stmt = (
         select(Proxy)
         .outerjoin(ProxyAggregate, ProxyAggregate.proxy_id == Proxy.id)
-        .where(Proxy.is_enabled.is_(True), Proxy.status.in_(['online','degraded']))
+        .where(Proxy.is_enabled.is_(True), Proxy.status.in_(['online', 'degraded']))
     )
     if account.account_type == 'country' and account.country_code:
         stmt = stmt.where(Proxy.country_code == account.country_code)
@@ -35,24 +49,42 @@ def select_proxy_for_account(db: Session, account: Account, strategy: str, stick
     candidates = non_quarantine or db.scalars(stmt.order_by(*_score_columns(strategy)).limit(50)).all()
     if not candidates:
         return None
+    best = candidates[0]
     if sticky_proxy_id:
         sticky = next((p for p in candidates if p.id == sticky_proxy_id), None)
         if sticky:
-            return sticky
-    return candidates[0]
+            sticky_score = float(sticky.aggregate.composite_score) if sticky.aggregate and sticky.aggregate.composite_score is not None else 0.0
+            best_score = float(best.aggregate.composite_score) if best.aggregate and best.aggregate.composite_score is not None else 0.0
+            if best_score - sticky_score <= _sticky_delta_threshold(db):
+                return sticky
+    return best
 
 
 def open_session(db: Session, account: Account, client_ip: str, client_login: str) -> SessionModel:
-    existing = db.scalar(select(SessionModel).where(SessionModel.client_ip == client_ip, SessionModel.client_login == client_login, SessionModel.status == 'active').order_by(SessionModel.started_at.desc()))
+    existing = db.scalar(
+        select(SessionModel)
+        .where(SessionModel.client_ip == client_ip, SessionModel.client_login == client_login, SessionModel.status == 'active')
+        .order_by(SessionModel.started_at.desc())
+    )
     if existing:
+        set_session_runtime(str(existing.id), {'status': existing.status, 'assigned_proxy_id': existing.assigned_proxy_id, 'sticky_proxy_id': existing.sticky_proxy_id})
         return existing
-    strategy = choose_strategy()
+    strategy = choose_strategy(db)
     proxy = select_proxy_for_account(db, account, strategy)
-    session = SessionModel(account_id=account.id, client_ip=client_ip, client_login=client_login, strategy_variant=strategy, assigned_proxy_id=proxy.id if proxy else None, sticky_proxy_id=proxy.id if proxy else None)
+    session = SessionModel(
+        account_id=account.id,
+        client_ip=client_ip,
+        client_login=client_login,
+        strategy_variant=strategy,
+        assigned_proxy_id=proxy.id if proxy else None,
+        sticky_proxy_id=proxy.id if proxy else None,
+    )
     db.add(session)
     db.flush()
     db.add(RoutingEvent(session_id=session.id, old_proxy_id=None, new_proxy_id=proxy.id if proxy else None, event_type='initial_assign', reason='session_open', strategy_variant=strategy))
+    session_opened(db, session)
     db.commit()
+    set_active_sessions_count(db.scalar(select(func.count()).select_from(SessionModel).where(SessionModel.status == 'active')) or 0)
     db.refresh(session)
     return session
 
@@ -67,6 +99,7 @@ def ensure_connection_proxy(db: Session, session: SessionModel) -> Proxy | None:
     session.assigned_proxy_id = next_proxy.id if next_proxy else None
     if next_proxy:
         session.sticky_proxy_id = next_proxy.id
+    set_session_runtime(str(session.id), {'status': session.status, 'assigned_proxy_id': session.assigned_proxy_id, 'sticky_proxy_id': session.sticky_proxy_id})
     db.add(RoutingEvent(session_id=session.id, old_proxy_id=old_id, new_proxy_id=next_proxy.id if next_proxy else None, event_type='reroute_new_connections', reason='assigned proxy unavailable', strategy_variant=session.strategy_variant))
     db.commit()
     return next_proxy
@@ -77,8 +110,10 @@ def open_connection(db: Session, session: SessionModel, target_host: str, target
     conn = SessionConnection(session_id=session.id, proxy_id=proxy.id if proxy else None, target_host=target_host, target_port=target_port)
     session.connections_count += 1
     session.active_connections_count += 1
-    session.last_activity_at = datetime.utcnow()
+    session.last_activity_at = datetime.now(timezone.utc)
     db.add(conn)
+    db.flush()
+    connection_opened(db, session, proxy.id if proxy else None)
     db.commit()
     db.refresh(conn)
     return conn
@@ -89,16 +124,18 @@ def close_connection(db: Session, connection: SessionConnection, bytes_in: int, 
     connection.bytes_out += bytes_out
     connection.state = state
     connection.close_reason = close_reason
-    connection.ended_at = datetime.utcnow()
-    connection.last_activity_at = datetime.utcnow()
+    connection.ended_at = datetime.now(timezone.utc)
+    connection.last_activity_at = datetime.now(timezone.utc)
     session = db.get(SessionModel, connection.session_id)
     if session:
         session.bytes_in += bytes_in
         session.bytes_out += bytes_out
         session.active_connections_count = max(0, session.active_connections_count - 1)
-        session.last_activity_at = datetime.utcnow()
-        if session.active_connections_count == 0 and state in ('closed', 'failed', 'killed'):
-            session.avg_speed_total_mbps = 0
+        session.last_activity_at = datetime.now(timezone.utc)
+        apply_traffic(db, session, connection.proxy_id, bytes_in, bytes_out)
+        connection_closed(db, session, connection.proxy_id)
+        if session.active_connections_count == 0 and session.status == 'killed':
+            session.ended_at = datetime.now(timezone.utc)
     db.commit()
 
 
@@ -108,16 +145,23 @@ def update_traffic(db: Session, session_id, connection_id, bytes_in_delta: int, 
     if session:
         session.bytes_in += bytes_in_delta
         session.bytes_out += bytes_out_delta
-        session.last_activity_at = datetime.utcnow()
+        session.last_activity_at = datetime.now(timezone.utc)
     if connection:
         connection.bytes_in += bytes_in_delta
         connection.bytes_out += bytes_out_delta
-        connection.last_activity_at = datetime.utcnow()
+        connection.last_activity_at = datetime.now(timezone.utc)
+    apply_traffic(db, session, connection.proxy_id if connection else None, bytes_in_delta, bytes_out_delta)
     db.commit()
 
 
 def close_session(db: Session, session: SessionModel, status: str):
+    if session.status == 'killed' and status == 'closed':
+        status = 'killed'
+    if is_kill_requested(str(session.id)):
+        status = 'killed'
     session.status = status
-    session.ended_at = datetime.utcnow()
-    session.last_activity_at = datetime.utcnow()
+    session.ended_at = datetime.now(timezone.utc)
+    session.last_activity_at = datetime.now(timezone.utc)
+    if status != 'active':
+        session_closed(db, session)
     db.commit()

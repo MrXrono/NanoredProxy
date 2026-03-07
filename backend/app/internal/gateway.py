@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.models import Account, Proxy, Session as SessionModel, SessionConnection
 from app.services.routing_service import close_connection, close_session, ensure_connection_proxy, open_connection, open_session, update_traffic
+from app.services.runtime_state import get_kill_reason, is_kill_requested
 
 router = APIRouter(prefix='/internal/v1/gateway', tags=['gateway-internal'])
 
@@ -79,5 +80,11 @@ async def session_close(payload: dict, db: Session = Depends(get_db)):
 async def session_state(session_id: str, db: Session = Depends(get_db)):
     session = db.get(SessionModel, session_id)
     if not session:
-        return {'session_id': session_id, 'status': 'error', 'kill_requested': True, 'assigned_proxy_id': None}
-    return {'session_id': str(session.id), 'status': session.status, 'kill_requested': session.status == 'killed', 'assigned_proxy_id': session.assigned_proxy_id}
+        return {'session_id': session_id, 'status': 'error', 'kill_requested': True, 'kill_reason': 'session not found', 'assigned_proxy_id': None}
+    return {
+        'session_id': str(session.id),
+        'status': session.status,
+        'kill_requested': is_kill_requested(session_id) or session.status == 'killed',
+        'kill_reason': get_kill_reason(session_id) or session.kill_reason,
+        'assigned_proxy_id': session.assigned_proxy_id,
+    }
