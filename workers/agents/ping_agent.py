@@ -21,7 +21,7 @@ def run_ping_cycle():
         cur.execute("""
             SELECT id, host(host) AS host
             FROM proxies
-            WHERE is_enabled = true
+            WHERE is_enabled = true AND status != 'blocked'
             ORDER BY coalesce(last_ping_at, first_seen_at) ASC NULLS FIRST
         """)
         all_proxies = cur.fetchall()
@@ -73,22 +73,11 @@ def _ping_batch(batch: list[dict]):
                 d['avg'], d['min'], d['max'], d['rcv'] > 0, now,
             ))
 
-            # Update proxy status
-            if d['rcv'] > 0:
-                cur.execute("""
-                    UPDATE proxies SET status = 'online_ping', last_ping_at = %s,
-                        is_quarantined = false
-                    WHERE id = %s AND status NOT IN ('online', 'disabled')
-                """, (now, proxy_id))
-                cur.execute("""
-                    UPDATE proxies SET last_ping_at = %s
-                    WHERE id = %s AND status IN ('online', 'disabled')
-                """, (now, proxy_id))
-            else:
-                cur.execute("""
-                    UPDATE proxies SET status = 'offline', last_ping_at = %s
-                    WHERE id = %s AND status != 'disabled'
-                """, (now, proxy_id))
+            # Update last_ping_at only (status managed by auth agent)
+            cur.execute("""
+                UPDATE proxies SET last_ping_at = %s
+                WHERE id = %s
+            """, (now, proxy_id))
 
             # Update current day stats
             ok = d['rcv']
