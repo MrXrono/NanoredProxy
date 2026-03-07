@@ -29,16 +29,19 @@ def reconcile_accounts(db: Session) -> int:
     ).all()
     country_counts = {cc.lower(): count for cc, count in countries if cc}
     touched = 0
-    existing = {a.username: a for a in db.scalars(select(Account).where(Account.account_type == 'country'))}
+    dynamic_accounts = {
+        a.username: a
+        for a in db.scalars(select(Account).where(Account.account_type == 'country', Account.is_dynamic.is_(True)))
+    }
     for cc, count in country_counts.items():
         if count >= 2:
-            if cc in existing:
-                existing[cc].is_enabled = True
-                existing[cc].last_reconciled_at = datetime.utcnow()
+            if cc in dynamic_accounts:
+                dynamic_accounts[cc].is_enabled = True
+                dynamic_accounts[cc].last_reconciled_at = datetime.utcnow()
             else:
                 db.add(Account(username=cc, password=cc, account_type='country', country_code=cc, is_enabled=True, is_dynamic=True, last_reconciled_at=datetime.utcnow()))
             touched += 1
-    for username, account in existing.items():
+    for username, account in dynamic_accounts.items():
         if country_counts.get(username, 0) < 2:
             account.is_enabled = False
             account.last_reconciled_at = datetime.utcnow()
