@@ -23,14 +23,18 @@ def verify_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
 
-def get_current_admin(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]):
-    if not credentials or credentials.scheme.lower() != 'bearer':
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing bearer token')
-    payload = verify_token(credentials.credentials)
+def get_admin_from_token(token: str) -> dict:
+    payload = verify_token(token)
     subject = payload.get('sub')
     if not subject:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token subject')
     return {'username': subject, 'id': 1}
+
+
+def get_current_admin(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]):
+    if not credentials or credentials.scheme.lower() != 'bearer':
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing bearer token')
+    return get_admin_from_token(credentials.credentials)
 
 
 def require_admin(admin: Annotated[dict, Depends(get_current_admin)]):

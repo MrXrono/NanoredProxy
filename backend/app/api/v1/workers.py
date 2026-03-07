@@ -8,6 +8,7 @@ from app.core.db import get_db
 from app.core.security import require_admin
 from app.models import SchedulerState
 from app.schemas.common import OkResponse
+from app.services.event_service import publish_event
 from app.services.runtime_state import get_worker_runtime, set_worker_runtime
 
 router = APIRouter(dependencies=[Depends(require_admin)])
@@ -37,6 +38,7 @@ async def pause_worker(worker_name: str, db: Session = Depends(get_db)):
     worker.pause_reason = 'paused by admin'
     set_worker_runtime(worker_name, 'paused', worker.pause_reason)
     db.commit()
+    publish_event('worker.paused', {'worker_name': worker_name, 'pause_reason': worker.pause_reason})
     return OkResponse()
 
 
@@ -47,6 +49,7 @@ async def resume_worker(worker_name: str, db: Session = Depends(get_db)):
     worker.pause_reason = None
     set_worker_runtime(worker_name, 'idle', None)
     db.commit()
+    publish_event('worker.resumed', {'worker_name': worker_name})
     return OkResponse()
 
 
@@ -57,4 +60,5 @@ async def run_worker(worker_name: str, db: Session = Depends(get_db)):
     worker.last_started_at = datetime.now(timezone.utc)
     set_worker_runtime(worker_name, 'running', None)
     db.commit()
+    publish_event('worker.run_now', {'worker_name': worker_name})
     return OkResponse()

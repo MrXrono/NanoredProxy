@@ -8,7 +8,7 @@ from app.auth import close_session as api_close_session
 from app.auth import open_connection as api_open_connection
 from app.auth import open_session as api_open_session
 from app.auth import resolve_auth, session_state
-from app.config import LISTEN_HOST, LISTEN_PORT
+from app.config import KILL_POLL_INTERVAL, LISTEN_HOST, LISTEN_PORT, UPSTREAM_CONNECT_TIMEOUT
 from app.connection_manager import connection_manager
 from app.kill_switch import kill_requested
 from app.session_manager import session_manager
@@ -84,7 +84,7 @@ async def read_request(reader: asyncio.StreamReader):
 
 
 async def open_via_upstream(proxy: dict, target_host: str, target_port: int):
-    reader, writer = await asyncio.open_connection(proxy["host"], proxy["port"])
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(proxy["host"], proxy["port"]), timeout=UPSTREAM_CONNECT_TIMEOUT)
     methods = [0x00]
     if proxy.get("auth_username"):
         methods = [0x02]
@@ -128,6 +128,7 @@ async def open_via_upstream(proxy: dict, target_host: str, target_port: int):
 
 async def relay(src: asyncio.StreamReader, dst: asyncio.StreamWriter, session_id: str, connection_id: str, count_incoming: bool):
     total = 0
+    last_kill_check = 0.0
     try:
         while True:
             chunk = await src.read(65536)
@@ -141,8 +142,11 @@ async def relay(src: asyncio.StreamReader, dst: asyncio.StreamWriter, session_id
                 traffic_meter.add_local(connection_id, 0, len(chunk))
             total += len(chunk)
             await traffic_meter.maybe_flush(session_id, connection_id)
-            if await kill_requested(session_id):
-                break
+            now = asyncio.get_running_loop().time()
+            if now - last_kill_check >= KILL_POLL_INTERVAL:
+                last_kill_check = now
+                if await kill_requested(session_id):
+                    break
     except Exception:
         pass
     return total
@@ -156,6 +160,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     upstream_writer = None
     total_in = 0
     total_out = 0
+    close_state = 'closed'
+    close_reason = 'completed'
     try:
         await negotiate_client(reader, writer)
         username, account = await authenticate_client(reader, writer, client_ip)
@@ -167,6 +173,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         if cmd != 0x01:
             writer.write(_reply(REPLY_COMMAND_NOT_SUPPORTED))
             await writer.drain()
+            close_state = 'failed'
+            close_reason = 'command not supported'
             return
 
         conn_resp = await api_open_connection(session_id, target_host, target_port)
@@ -175,6 +183,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         if not proxy:
             writer.write(_reply(REPLY_GENERAL_FAILURE))
             await writer.drain()
+            close_state = 'failed'
+            close_reason = 'no upstream proxy available'
             return
         connection_manager.add(connection_id, {"session_id": session_id, "proxy": proxy})
         upstream_reader, upstream_writer = await open_via_upstream(proxy, target_host, target_port)
@@ -196,15 +206,23 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         bytes_in, bytes_out = await traffic_meter.flush_all(session_id, connection_id)
         total_in = max(total_in, bytes_in)
         total_out = max(total_out, bytes_out)
-        await api_close_connection(connection_id, total_in, total_out, "closed", "completed")
+        state = await session_state(session_id)
+        if state.get('kill_requested'):
+            close_state = 'killed'
+            close_reason = state.get('kill_reason') or 'killed'
+        await api_close_connection(connection_id, total_in, total_out, close_state, close_reason)
     except asyncio.IncompleteReadError:
+        close_state = 'failed'
+        close_reason = 'client disconnected'
         if connection_id and session_id:
             bytes_in, bytes_out = await traffic_meter.flush_all(session_id, connection_id)
-            await api_close_connection(connection_id, bytes_in, bytes_out, "failed", "client disconnected")
+            await api_close_connection(connection_id, bytes_in, bytes_out, close_state, close_reason)
     except Exception as exc:
+        close_state = 'failed'
+        close_reason = str(exc)
         if connection_id and session_id:
             bytes_in, bytes_out = await traffic_meter.flush_all(session_id, connection_id)
-            await api_close_connection(connection_id, bytes_in, bytes_out, "failed", str(exc))
+            await api_close_connection(connection_id, bytes_in, bytes_out, close_state, close_reason)
     finally:
         if upstream_writer:
             upstream_writer.close()

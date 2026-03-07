@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'
+const WS = import.meta.env.VITE_WS_URL || API.replace(/^http/, 'ws')
 
 async function api(path, opts = {}, token) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
@@ -87,10 +88,13 @@ export default function App() {
   const [workers, setWorkers] = useState([])
   const [settings, setSettings] = useState({})
   const [audit, setAudit] = useState([])
+  const [events, setEvents] = useState([])
   const [proxyImportText, setProxyImportText] = useState('')
   const [configPreview, setConfigPreview] = useState('')
   const [message, setMessage] = useState('')
-  const tabs = useMemo(() => ['dashboard','proxies','accounts','sessions','workers','settings','config','audit'], [])
+  const wsRef = useRef(null)
+  const reloadTimer = useRef(null)
+  const tabs = useMemo(() => ['dashboard','proxies','accounts','sessions','workers','settings','config','audit','events'], [])
 
   function handleLogin(nextToken, nextAdmin) {
     localStorage.setItem('nrp_token', nextToken)
@@ -102,6 +106,7 @@ export default function App() {
     localStorage.removeItem('nrp_token')
     setToken('')
     setAdmin(null)
+    if (wsRef.current) wsRef.current.close()
   }
 
   async function loadAll() {
@@ -127,12 +132,39 @@ export default function App() {
     setAdmin(meData)
   }
 
+  function scheduleReload() {
+    if (reloadTimer.current) return
+    reloadTimer.current = setTimeout(async () => {
+      reloadTimer.current = null
+      try { await loadAll() } catch {}
+    }, 800)
+  }
+
   useEffect(() => {
     if (!token) return
     loadAll().catch(err => {
       setMessage(err.message)
       if ((err.message || '').toLowerCase().includes('token')) logout()
     })
+  }, [token])
+
+  useEffect(() => {
+    if (!token) return
+    const ws = new WebSocket(`${WS}/ws/events?token=${encodeURIComponent(token)}`)
+    wsRef.current = ws
+    ws.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data)
+        setEvents(prev => [data, ...prev].slice(0, 100))
+        if (!String(data.type || '').startsWith('system.heartbeat')) scheduleReload()
+      } catch {}
+    }
+    ws.onclose = () => {
+      if (token) setTimeout(() => {
+        if (wsRef.current === ws) wsRef.current = null
+      }, 1000)
+    }
+    return () => ws.close()
   }, [token])
 
   async function importProxies() {
@@ -147,25 +179,10 @@ export default function App() {
     }
   }
 
-  async function reconcileAccounts() {
-    await api('/accounts/reconcile', { method: 'POST' }, token)
-    await loadAll()
-  }
-
-  async function killSession(id) {
-    await api(`/sessions/${id}/kill`, { method: 'POST', body: JSON.stringify({ reason: 'manual kill from UI' }) }, token)
-    await loadAll()
-  }
-
-  async function workerAction(name, action) {
-    await api(`/system/workers/${name}/${action}`, { method: 'POST' }, token)
-    await loadAll()
-  }
-
-  async function toggleProxy(id, enabled) {
-    await api(`/proxies/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }, token)
-    await loadAll()
-  }
+  async function reconcileAccounts() { await api('/accounts/reconcile', { method: 'POST' }, token); await loadAll() }
+  async function killSession(id) { await api(`/sessions/${id}/kill`, { method: 'POST', body: JSON.stringify({ reason: 'manual kill from UI' }) }, token); await loadAll() }
+  async function workerAction(name, action) { await api(`/system/workers/${name}/${action}`, { method: 'POST' }, token); await loadAll() }
+  async function toggleProxy(id, enabled) { await api(`/proxies/${id}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' }, token); await loadAll() }
 
   if (!token) return <Login onLogin={handleLogin} />
 
@@ -211,9 +228,7 @@ user:pass@5.6.7.8:1080" />
                   {proxies.map(p => (
                     <tr key={p.id}>
                       <td>{p.id}</td><td>{p.host}</td><td>{p.port}</td><td>{p.status}</td><td>{p.country_code || '-'}</td><td>{p.composite_score ?? '-'}</td><td>{p.avg_latency_day_ms ?? '-'}</td>
-                      <td className="actions">
-                        <button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'Disable' : 'Enable'}</button>
-                      </td>
+                      <td className="actions"><button onClick={() => toggleProxy(p.id, !p.is_enabled)}>{p.is_enabled ? 'Disable' : 'Enable'}</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -223,65 +238,28 @@ user:pass@5.6.7.8:1080" />
         </>
       )}
 
-      {tab === 'accounts' && (
-        <Section title="Accounts" actions={<button onClick={reconcileAccounts}>Reconcile</button>}>
-          <JsonTable rows={accounts} />
-        </Section>
-      )}
+      {tab === 'accounts' && <Section title="Accounts" actions={<button onClick={reconcileAccounts}>Reconcile</button>}><JsonTable rows={accounts} /></Section>}
 
       {tab === 'sessions' && (
         <Section title="Sessions">
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>id</th><th>login</th><th>client_ip</th><th>proxy</th><th>status</th><th>connections</th><th>traffic</th><th>actions</th></tr></thead>
-              <tbody>
-                {sessions.map(s => (
-                  <tr key={s.id}>
-                    <td>{s.id}</td><td>{s.client_login}</td><td>{s.client_ip}</td><td>{s.assigned_proxy_id ?? '-'}</td><td>{s.status}</td><td>{s.active_connections_count}/{s.connections_count}</td><td>{s.total_bytes}</td>
-                    <td><button onClick={() => killSession(s.id)}>Kill</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <div className="table-wrap"><table><thead><tr><th>id</th><th>login</th><th>client_ip</th><th>proxy</th><th>status</th><th>connections</th><th>traffic</th><th>actions</th></tr></thead><tbody>
+            {sessions.map(s => <tr key={s.id}><td>{s.id}</td><td>{s.client_login}</td><td>{s.client_ip}</td><td>{s.assigned_proxy_id ?? '-'}</td><td>{s.status}</td><td>{s.active_connections_count}/{s.connections_count}</td><td>{s.total_bytes}</td><td><button onClick={() => killSession(s.id)}>Kill</button></td></tr>)}
+          </tbody></table></div>
         </Section>
       )}
 
       {tab === 'workers' && (
         <Section title="Workers">
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>worker</th><th>status</th><th>last_started_at</th><th>last_finished_at</th><th>pause_reason</th><th>actions</th></tr></thead>
-              <tbody>
-                {workers.map(w => (
-                  <tr key={w.worker_name}>
-                    <td>{w.worker_name}</td><td>{w.status}</td><td>{w.last_started_at || '-'}</td><td>{w.last_finished_at || '-'}</td><td>{w.pause_reason || '-'}</td>
-                    <td className="actions">
-                      <button onClick={() => workerAction(w.worker_name, 'run-now')}>Run</button>
-                      <button onClick={() => workerAction(w.worker_name, 'pause')}>Pause</button>
-                      <button onClick={() => workerAction(w.worker_name, 'resume')}>Resume</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <div className="table-wrap"><table><thead><tr><th>worker</th><th>status</th><th>last_started_at</th><th>last_finished_at</th><th>pause_reason</th><th>actions</th></tr></thead><tbody>
+            {workers.map(w => <tr key={w.worker_name}><td>{w.worker_name}</td><td>{w.status}</td><td>{w.last_started_at || '-'}</td><td>{w.last_finished_at || '-'}</td><td>{w.pause_reason || '-'}</td><td className="actions"><button onClick={() => workerAction(w.worker_name, 'run-now')}>Run</button><button onClick={() => workerAction(w.worker_name, 'pause')}>Pause</button><button onClick={() => workerAction(w.worker_name, 'resume')}>Resume</button></td></tr>)}
+          </tbody></table></div>
         </Section>
       )}
 
-      {tab === 'settings' && (
-        <Section title="Runtime settings"><pre>{JSON.stringify(settings, null, 2)}</pre></Section>
-      )}
-
-      {tab === 'config' && (
-        <Section title="Unified proxychains config" actions={<button onClick={() => navigator.clipboard.writeText(configPreview)}>Copy</button>}>
-          <pre>{configPreview}</pre>
-        </Section>
-      )}
-
-      {tab === 'audit' && (
-        <Section title="Audit logs"><JsonTable rows={audit} /></Section>
-      )}
+      {tab === 'settings' && <Section title="Runtime settings"><pre>{JSON.stringify(settings, null, 2)}</pre></Section>}
+      {tab === 'config' && <Section title="Unified proxychains config" actions={<button onClick={() => navigator.clipboard.writeText(configPreview)}>Copy</button>}><pre>{configPreview}</pre></Section>}
+      {tab === 'audit' && <Section title="Audit logs"><JsonTable rows={audit} /></Section>}
+      {tab === 'events' && <Section title="Realtime events"><JsonTable rows={events} /></Section>}
     </div>
   )
 }

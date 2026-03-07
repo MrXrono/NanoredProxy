@@ -5,6 +5,7 @@ from app.core.db import get_db
 from app.core.security import require_admin
 from app.schemas.common import OkResponse
 from app.schemas.proxy import ProxyImportResponse, ProxyImportTextRequest, ProxySetCountryRequest, ProxyUpdateRequest
+from app.services.event_service import publish_event
 from app.services.proxy_parser import parse_proxy_text
 from app.services.proxy_service import (
     create_proxy_if_missing,
@@ -39,9 +40,11 @@ async def import_text(payload: ProxyImportTextRequest, db: Session = Depends(get
     inserted = 0
     duplicates = 0
     for item in items:
-        _, created = create_proxy_if_missing(db, item)
+        proxy, created = create_proxy_if_missing(db, item)
         inserted += int(created)
         duplicates += int(not created)
+        if created:
+            publish_event('proxy.imported', {'proxy_id': proxy.id, 'host': item['host'], 'port': item['port']})
     db.commit()
     return ProxyImportResponse(parsed=len(items), inserted=inserted, duplicates=duplicates, queued_for_check=inserted)
 
@@ -53,9 +56,11 @@ async def import_file(file: UploadFile = File(...), db: Session = Depends(get_db
     inserted = 0
     duplicates = 0
     for item in items:
-        _, created = create_proxy_if_missing(db, item)
+        proxy, created = create_proxy_if_missing(db, item)
         inserted += int(created)
         duplicates += int(not created)
+        if created:
+            publish_event('proxy.imported', {'proxy_id': proxy.id, 'host': item['host'], 'port': item['port']})
     db.commit()
     return ProxyImportResponse(parsed=len(items), inserted=inserted, duplicates=duplicates, queued_for_check=inserted)
 
@@ -87,6 +92,7 @@ async def patch_proxy(proxy_id: int, payload: ProxyUpdateRequest, db: Session = 
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     update_proxy(db, proxy, payload, actor_id=str(admin.get('id', 1)))
+    publish_event('proxy.updated', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -96,6 +102,7 @@ async def set_country(proxy_id: int, payload: ProxySetCountryRequest, db: Sessio
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     svc_set_country(db, proxy, payload.country_code, True, actor_id=str(admin.get('id', 1)))
+    publish_event('proxy.country_set', {'proxy_id': proxy.id, 'country_code': payload.country_code})
     return OkResponse()
 
 
@@ -105,6 +112,7 @@ async def clear_country(proxy_id: int, db: Session = Depends(get_db), admin: dic
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     svc_set_country(db, proxy, None, False, actor_id=str(admin.get('id', 1)))
+    publish_event('proxy.country_cleared', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -114,6 +122,7 @@ async def enable_proxy(proxy_id: int, db: Session = Depends(get_db)):
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     toggle_proxy(db, proxy, enabled=True)
+    publish_event('proxy.enabled', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -123,6 +132,7 @@ async def disable_proxy(proxy_id: int, db: Session = Depends(get_db)):
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     toggle_proxy(db, proxy, enabled=False)
+    publish_event('proxy.disabled', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -132,6 +142,7 @@ async def quarantine_proxy(proxy_id: int, db: Session = Depends(get_db)):
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     toggle_proxy(db, proxy, quarantine=True)
+    publish_event('proxy.quarantined', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -141,6 +152,7 @@ async def unquarantine_proxy(proxy_id: int, db: Session = Depends(get_db)):
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
     toggle_proxy(db, proxy, quarantine=False)
+    publish_event('proxy.unquarantined', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -151,6 +163,7 @@ async def recheck_proxy(proxy_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='Proxy not found')
     proxy.status = 'checking'
     db.commit()
+    publish_event('proxy.recheck_requested', {'proxy_id': proxy.id})
     return OkResponse()
 
 
@@ -159,8 +172,7 @@ async def speedtest_proxy(proxy_id: int, db: Session = Depends(get_db)):
     proxy = db_get_proxy(db, proxy_id)
     if not proxy:
         raise HTTPException(status_code=404, detail='Proxy not found')
-    proxy.last_speedtest_at = proxy.last_speedtest_at
-    db.commit()
+    publish_event('proxy.speedtest_requested', {'proxy_id': proxy.id})
     return OkResponse()
 
 

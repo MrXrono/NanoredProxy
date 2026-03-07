@@ -8,6 +8,7 @@ from redis.exceptions import RedisError
 
 from app.core.config import settings
 
+EVENT_CHANNEL = 'nanoredproxy:events'
 _redis: Redis | None = None
 
 
@@ -45,3 +46,18 @@ def redis_delete(key: str) -> bool:
         return True
     except RedisError:
         return False
+
+
+def redis_publish_json(channel: str, value: Any) -> bool:
+    try:
+        get_redis().publish(channel, json.dumps(value))
+        return True
+    except RedisError:
+        return False
+
+
+def redis_pubsub():
+    try:
+        return get_redis().pubsub(ignore_subscribe_messages=True)
+    except RedisError:
+        return None

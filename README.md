@@ -16,6 +16,8 @@ NanoredProxy is a containerized SOCKS5 proxy pool manager with:
 - full traffic accounting per session/connection/account/proxy
 - unified proxychains config generation
 - admin UI session kill
+- websocket realtime events for admin UI
+- alembic bootstrap migration
 
 ## Quick start
 ```bash
@@ -27,20 +29,19 @@ docker compose up --build
 - Backend: `http://localhost:8000/docs`
 - Frontend: `http://localhost:3000`
 - SOCKS5 Gateway: `localhost:1080`
+- Realtime WS: `ws://localhost:8000/api/v1/ws/events?token=<JWT>`
+
+## Migrations
+```bash
+cd backend
+alembic upgrade head
+```
 
 ## Notes
-This repository contains a production-oriented scaffold with core API, models, workers, and gateway skeleton. Business logic extension points are marked in code.
+Current repository contains implemented backend API, gateway base routing, workers, realtime admin events, and integration/unit tests.
 
-
-## Current state
-
-Implemented in repository now:
-- JWT-protected admin API
-- React admin UI with login, dashboard, proxies, accounts, sessions, workers, config and audit pages
-- Basic unit tests for parser/security/config/scoring
-
-Run tests:
+## Tests
 ```bash
 cd backend && pytest -q
-cd ../workers && PYTHONPATH=/workspace/NanoredProxy pytest -q
+cd ../frontend && npm run build
 ```

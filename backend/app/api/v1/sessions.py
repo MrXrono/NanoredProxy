@@ -7,6 +7,7 @@ from app.core.security import require_admin
 from app.models import RoutingEvent, Session as SessionModel, SessionConnection
 from app.schemas.common import OkResponse
 from app.schemas.session import SessionKillRequest
+from app.services.event_service import publish_event
 from app.services.routing_service import close_session
 from app.services.runtime_state import request_kill
 
@@ -52,6 +53,7 @@ async def kill_session(session_id: str, payload: SessionKillRequest | None = Non
     session.kill_reason = payload.reason if payload else 'manual kill'
     request_kill(session_id, session.kill_reason)
     close_session(db, session, 'killed')
+    publish_event('session.killed', {'session_id': session_id, 'reason': session.kill_reason})
     return OkResponse()
 
 
@@ -65,4 +67,5 @@ async def disconnect_connections(session_id: str, db: Session = Depends(get_db))
     if session:
         session.active_connections_count = 0
     db.commit()
+    publish_event('session.connections_disconnected', {'session_id': session_id, 'count': len(items)})
     return OkResponse()
